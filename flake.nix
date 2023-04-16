@@ -30,6 +30,7 @@
         buildInputs = [
           zig-overlay.packages.${system}.master
           zls.packages.${system}.default
+          pkgs.xorg.libX11.dev
         ];
       };
     };
