@@ -24,25 +24,24 @@
     let
       system = "x86_64-linux";
 
-      pkgs = import nixpkgs { inherit system; };
+      # HACK: fetch nixpkgs with glibc 2.35-224m until Zig starts supporting new libc (https://github.com/ziglang/zig/pull/15309 is merged)
+      # TODO: figure out how to trick Zig to use system (packaged) libc
+      oldPkgs = import (pkgs.fetchFromGitHub {
+        owner = "NixOS";
+        repo = "nixpkgs";
+        rev = "8ad5e8132c5dcf977e308e7bf5517cc6cc0bf7d8";
+        sha256 = "sha256-0gI2FHID8XYD3504kLFRLH3C2GmMCzVMC50APV/kZp8=";
+      }) { inherit system; };
 
-      myGcc = pkgs.wrapCCWith { # create new gcc with overriden libc version
-        cc = pkgs.gcc.cc;
-        bintools = pkgs.wrapBintoolsWith {
-          bintools = pkgs.binutils-unwrapped;
-          libc = null;
-        };
-      };
-      myStdenv =
-        pkgs.overrideCC pkgs.stdenv myGcc; # create new stdenv with custom gcc
+      pkgs = import nixpkgs { inherit system; };
     in {
       devShells.${system}.default = pkgs.mkShell.override {
-        stdenv = myStdenv;
+        stdenv = oldPkgs.stdenv;
       } { # override stdenv for mkShell call
         buildInputs = [
           zig-overlay.packages.${system}.master
           zls.packages.${system}.default
-          pkgs.xorg.libX11.dev
+          oldPkgs.xorg.libX11.dev # we also need Xlib linked against older glibc
         ];
       };
     };
