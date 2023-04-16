@@ -16,8 +16,11 @@ pub fn main() !void {
 
     try bw.flush(); // don't forget to flush!
 
-    _ = xlib.XOpenDisplay(null);
-    // assert(dpy);
+    var dpy = xlib.XOpenDisplay(null);
+    if(dpy) |_| {
+        try stdout.print("Got a non nil pointer back, success!\n", .{});
+        try bw.flush();
+    }
 }
 
 test "simple test" {
