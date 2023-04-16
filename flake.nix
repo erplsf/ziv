@@ -25,8 +25,20 @@
       system = "x86_64-linux";
 
       pkgs = import nixpkgs { inherit system; };
+
+      myGcc = pkgs.wrapCCWith { # create new gcc with overriden libc version
+        cc = pkgs.gcc.cc;
+        bintools = pkgs.wrapBintoolsWith {
+          bintools = pkgs.binutils-unwrapped;
+          libc = null;
+        };
+      };
+      myStdenv =
+        pkgs.overrideCC pkgs.stdenv myGcc; # create new stdenv with custom gcc
     in {
-      devShells.${system}.default = pkgs.mkShell {
+      devShells.${system}.default = pkgs.mkShell.override {
+        stdenv = myStdenv;
+      } { # override stdenv for mkShell call
         buildInputs = [
           zig-overlay.packages.${system}.master
           zls.packages.${system}.default
