@@ -1,5 +1,5 @@
 const std = @import("std");
-const xlib = @cImport(@cInclude("X11/Xlib.h"));
+const x = @cImport(@cInclude("X11/Xlib.h"));
 
 pub fn main() !void {
     // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
@@ -16,8 +16,8 @@ pub fn main() !void {
 
     try bw.flush(); // don't forget to flush!
 
-    var dpy = xlib.XOpenDisplay(null);
-    if(dpy) |_| {
+    var dpy = x.XOpenDisplay(null);
+    if (dpy) |_| {
         try stdout.print("Got a non nil pointer back, success!\n", .{});
         try bw.flush();
     }
