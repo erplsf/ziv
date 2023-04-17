@@ -18,9 +18,11 @@
       url = "github:edolstra/flake-compat";
       flake = false;
     };
+
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, zig-overlay, zls, ... }@inputs:
+  outputs = { self, nixpkgs, zig-overlay, zls, flake-utils, ... }@inputs:
     let
       system = "x86_64-linux";
 
@@ -34,15 +36,38 @@
       }) { inherit system; };
 
       pkgs = import nixpkgs { inherit system; };
+
+      buildInputs = [
+        zig-overlay.packages.${system}.master
+        oldPkgs.xorg.libX11.dev # we also need Xlib linked against older glibc
+      ];
     in {
       devShells.${system}.default = pkgs.mkShell.override {
         stdenv = oldPkgs.stdenv;
       } { # override stdenv for mkShell call
-        buildInputs = [
-          zig-overlay.packages.${system}.master
-          zls.packages.${system}.default
-          oldPkgs.xorg.libX11.dev # we also need Xlib linked against older glibc
-        ];
+        buildInputs = buildInputs ++ [ zls.packages.${system}.default ];
+      };
+      defaultPackage.${system} = pkgs.stdenv.mkDerivation {
+        pname = "ziv";
+        version = "master";
+        src = ./.;
+
+        hardeningDisable = [ "all" ];
+
+        nativeBuildInputs = buildInputs ++ [ pkgs.autoPatchelfHook ];
+
+        dontConfigure = true;
+        dontInstall = true;
+
+        buildPhase = ''
+          mkdir -p $out
+          mkdir -p .cache/
+          zig build --cache-dir $(pwd)/zig-cache --global-cache-dir $(pwd)/.cache -Dcpu=baseline -Doptimize=ReleaseSafe --prefix $out
+        '';
+      };
+      defaultApp = flake-utils.lib.mkApp {
+        drv =
+          self.defaultPackage."${system}".override { stdenv = oldPkgs.stdenv; };
       };
     };
 }
