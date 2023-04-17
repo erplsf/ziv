@@ -61,7 +61,7 @@
 
         buildPhase = ''
           mkdir -p $out
-          mkdir -p .cache/
+          mkdir -p .cache/{h,o,z,tmp}
           zig build --cache-dir $(pwd)/zig-cache --global-cache-dir $(pwd)/.cache -Dcpu=baseline -Doptimize=ReleaseSafe --prefix $out
         '';
       };
