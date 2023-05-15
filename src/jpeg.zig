@@ -57,7 +57,7 @@ const Parser = struct {
 
     pub fn parseMarkers(self: *Self) !void {
         var i: usize = 0;
-        var soa_found = false;
+        var soi_found = false;
 
         var restartInterval: ?u16 = null;
         _ = restartInterval;
@@ -66,12 +66,12 @@ const Parser = struct {
             const value = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
             const marker = @intToEnum(Marker, value);
 
-            if (!soa_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
+            if (!soi_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
                 std.debug.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
                 std.debug.print("{?}\n", .{marker});
             }
 
-            if (!soa_found) {
+            if (!soi_found) {
                 try self.markers.put(marker, i);
                 switch (marker) {
                     .startOfImage => {},
@@ -83,7 +83,7 @@ const Parser = struct {
                         i += 4; // NOTE: HACK
                     },
                     .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
-                        soa_found = true;
+                        soi_found = true;
                     },
                     // .defineHuffmanTable => {
                     //     i += 2;
@@ -177,8 +177,13 @@ const Parser = struct {
     }
 
     pub fn buildHuffmanTables(self: *Self) !void {
-        _ = self;
+        const dhtPosition = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoDefineHuffmanTableMarkerFound;
+        _ = dhtPosition;
     }
+
+    const ParserError = error{
+        NoDefineHuffmanTableMarkerFound,
+    };
 };
 
 pub fn main() !void {
