@@ -1,19 +1,40 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 
-// marker_mapping = {
-//     0xffd8: "Start of Image",
-//     0xffe0: "Application Default Header",
-//     0xffdb: "Quantization Table",
-//     0xffc0: "Start of Frame",
-//     0xffc4: "Define Huffman Table",
-//     0xffda: "Start of Scan",
-//     0xffd9: "End of Image"
-// }
+const Marker = enum(u16) {
+    startOfImage = 0xffd8,
+    app0 = 0xffe0,
+    app1 = 0xffe1,
+    app2 = 0xffe2,
+    app13 = 0xffed,
+    app14 = 0xffee,
+    quantizationTable = 0xffdb,
+    startOfFrame0 = 0xffc0,
+    defineHuffmanTable = 0xffc4,
+    startOfScan = 0xffda,
+    endOfImage = 0xffd9,
+    defineRestartInterval = 0xffdd,
+    _,
+};
 
-const MarkerTuple = struct {
-    marker: Marker,
-    offset: u8,
+const HuffmanTableHeader = packed struct {
+    class: Class,
+    destinationIdentifier: u4,
+
+    const Class = enum(u4) {
+        DcOrLossless = 0x0,
+        Ac = 0x1,
+    };
+};
+
+const QuantizationTableHeader = packed struct {
+    class: Class,
+    destinationIdentifier: u4,
+
+    const Class = enum(u4) {
+        DcOrLossless = 0x0,
+        Ac = 0x1,
+    };
 };
 
 const Parser = struct {
@@ -39,12 +60,11 @@ const Parser = struct {
         var soa_found = false;
 
         var restartInterval: ?u16 = null;
+        _ = restartInterval;
 
         while (i < self.data.len) : (i += 2) {
             const value = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
             const marker = @intToEnum(Marker, value);
-
-            if (soa_found and marker == .endOfImage) {}
 
             if (!soa_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
                 std.debug.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
@@ -52,75 +72,100 @@ const Parser = struct {
             }
 
             if (!soa_found) {
+                try self.markers.put(marker, i);
                 switch (marker) {
-                    .startOfImage => {
-                        try self.markers.put(marker, i);
-                    },
+                    .startOfImage => {},
                     .endOfImage => {
                         break;
                     },
                     .defineRestartInterval => {
-                        restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], std.builtin.Endian.Big); // skip two bytes to find the length we need to skip
+                        // restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], std.builtin.Endian.Big); // skip two bytes to find the length we need to skip
                         i += 4; // NOTE: HACK
                     },
                     .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
                         soa_found = true;
                     },
-                    .defineHuffmanTable => {
-                        i += 2;
-                        const block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
-                        const end_position = i + block_length;
-                        i += 2;
+                    // .defineHuffmanTable => {
+                    //     i += 2;
+                    //     const block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
+                    //     const end_position = i + block_length;
+                    //     i += 2;
 
-                        while (true) {
-                            const table_class = @ptrCast(*const HuffmanTableHeader, &self.data[i]);
-                            i += 1;
-                            std.debug.print("HTH: {?}\n", .{table_class});
+                    //     while (true) {
+                    //         const table_class = @ptrCast(*const HuffmanTableHeader, &self.data[i]);
+                    //         _ = table_class;
+                    //         i += 1;
+                    //         // std.debug.print("HTH: {?}\n", .{table_class});
 
-                            const lengths: *const [16]u8 = @ptrCast(*const [16]u8, self.data[i .. i + 16]);
-                            i += 16;
-                            std.debug.print("Lengths: ", .{});
+                    //         const lengths: *const [16]u8 = @ptrCast(*const [16]u8, self.data[i .. i + 16]);
+                    //         i += 16;
+                    //         // std.debug.print("Lengths: ", .{});
 
-                            utils.slicePrint(u8, lengths);
-                            std.debug.print("\n", .{});
+                    //         // utils.slicePrint(u8, lengths);
+                    //         // std.debug.print("\n", .{});
 
-                            var sum: usize = 0;
-                            for (lengths) |len| {
-                                sum += len;
-                            }
-                            std.debug.print("Total element length: {d}\n", .{sum});
+                    //         var sum: usize = 0;
+                    //         for (lengths) |len| {
+                    //             sum += len;
+                    //         }
+                    //         // std.debug.print("Total element count: {d}\n", .{sum});
 
-                            var data_i: usize = 0;
-                            _ = data_i;
-                            var code_candidate: u16 = 0;
-                            _ = code_candidate;
-                            var code_index: usize = 0;
-                            _ = code_index;
+                    //         var data_i: usize = 0;
+                    //         _ = data_i;
+                    //         var code_candidate: u16 = 0;
+                    //         var code_index: usize = 0;
 
-                            i += sum;
+                    //         var code_map = std.AutoHashMap(u8, u16).init(self.allocator);
+                    //         defer code_map.deinit();
 
-                            if (i == end_position) break;
+                    //         while (code_index < 16) : (code_index += 1) {
+                    //             const code_count_for_index = lengths[code_index];
+                    //             var current_code_index: usize = 0;
+                    //             // std.debug.print("{d} codes of length {d}: [", .{ code_count_for_index, code_index + 1 });
+                    //             while (current_code_index < code_count_for_index) : (current_code_index += 1) {
+                    //                 // std.debug.print("{b}", .{code_candidate});
+                    //                 // if (current_code_index != code_count_for_index - 1) std.debug.print(",", .{});
 
-                            // var code_map = std.AutoHashMap(u5, u16).init(allocator);
-                            // defer code_map.deinit();
+                    //                 try code_map.put(self.data[i], code_candidate);
+                    //                 i += 1;
+                    //                 code_candidate += 1;
+                    //             }
+                    //             // std.debug.print("]\n", .{});
 
-                            // while (code_index < 16) : (code_index += 1) {
-                            //     const code_count_for_index = lengths[code_index];
-                            //     var current_code_index: usize = 0;
-                            //     std.debug.print("{d} codes of length {d}: [", .{ code_count_for_index, code_index + 1 });
-                            //     while (current_code_index < code_count_for_index) : (current_code_index += 1) {
-                            //         std.debug.print("{b}", .{code_candidate});
-                            //         if (current_code_index != code_count_for_index - 1) std.debug.print(",", .{});
-                            //         code_candidate += 1;
-                            //     }
-                            //     std.debug.print("]\n", .{});
+                    //             code_candidate <<= 1; // shift to the left to add zero in front
+                    //         }
 
-                            //     code_candidate <<= 1; // shift to the left to add zero in front
-                            // }
-                        }
+                    //         // var it = code_map.iterator();
+                    //         // while (it.next()) |kv| {
+                    //         //     std.debug.print("{b}: {b}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
+                    //         // }
 
-                        i -= 2; // HACK: why this is needed?
-                    },
+                    //         if (i == end_position) break;
+                    //     }
+
+                    //     // i += sum;
+
+                    //     i -= 2; // HACK: why this is needed?
+                    // },
+                    // .quantizationTable => {
+                    //     i += 2; // skip qunatization table marker
+                    //     const block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big); // skip two bytes to find the length we need to skip
+                    //     const end_position = (i - 2) + block_length;
+
+                    //     i += 2;
+
+                    //     while (true) {
+                    //         const table_class = @ptrCast(*const QuantizationTableHeader, &self.data[i]);
+                    //         i += 1;
+
+                    //         i += 64;
+                    //         std.debug.print("HTH: {?}\n", .{table_class});
+
+                    //         if (i == end_position) break;
+                    //     }
+
+                    //     i += (block_length - 2); // substract two because header is included in block length
+                    // },
                     else => {
                         const block_length = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], std.builtin.Endian.Big); // skip two bytes to find the length we need to skip
                         // std.debug.print("block length: 0x{?} -> {d}\n", .{ std.fmt.fmtSliceHexLower(self.data[i + 2 .. i + 4]), block_length });
@@ -130,28 +175,10 @@ const Parser = struct {
             }
         }
     }
-};
 
-const Marker = enum(u16) {
-    startOfImage = 0xffd8,
-    app0 = 0xffe0,
-    quantizationTable = 0xffdb,
-    startOfFrame0 = 0xffc0,
-    defineHuffmanTable = 0xffc4,
-    startOfScan = 0xffda,
-    endOfImage = 0xffd9,
-    defineRestartInterval = 0xffdd,
-    _,
-};
-
-const HuffmanTableHeader = packed struct {
-    class: Class,
-    destinationIdentifier: u4,
-
-    const Class = enum(u4) {
-        DcOrLossless = 0x0,
-        Ac = 0x1,
-    };
+    pub fn buildHuffmanTables(self: *Self) !void {
+        _ = self;
+    }
 };
 
 pub fn main() !void {
@@ -176,16 +203,10 @@ pub fn main() !void {
     defer parser.deinit();
 
     try parser.parseMarkers();
-    std.debug.print("markers: {?}\n", .{parser.markers});
+    try parser.buildHuffmanTables();
 
-    // while (true) {
-    //     const number_of_read_bytes = try buffered_file.read(&buffer);
-
-    //     std.debug.print("0x{d}", .{std.fmt.fmtSliceHexLower(&buffer)});
-
-    //     if (number_of_read_bytes == 2) {
-    //         break; // No more data
-    //     }
-    //     // Buffer now has some of the file bytes, do something with it here...
+    // var it = parser.markers.keyIterator();
+    // while (it.next()) |key| {
+    //     std.debug.print("{?}, ", .{key});
     // }
 }

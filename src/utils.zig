@@ -9,11 +9,3 @@ pub fn slicePrint(comptime T: type, slice: []const T) void {
     }
     std.debug.print("]", .{});
 }
-
-pub fn mapPrint(
-    comptime K: type,
-    comptime V: type,
-) void {
-    _ = V;
-    _ = K;
-}
