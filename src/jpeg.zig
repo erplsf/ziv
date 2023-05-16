@@ -10,6 +10,7 @@ const Marker = enum(u16) {
     app14 = 0xffee,
     quantizationTable = 0xffdb,
     startOfFrame0 = 0xffc0,
+    startOfFrame2 = 0xffc2,
     defineHuffmanTable = 0xffc4,
     startOfScan = 0xffda,
     endOfImage = 0xffd9,
@@ -57,7 +58,7 @@ const Parser = struct {
 
     pub fn parseMarkers(self: *Self) !void {
         var i: usize = 0;
-        var soi_found = false;
+        var sos_found = false;
 
         var restartInterval: ?u16 = null;
         _ = restartInterval;
@@ -66,24 +67,27 @@ const Parser = struct {
             const value = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
             const marker = @intToEnum(Marker, value);
 
-            if (!soi_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
+            if (!sos_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
                 std.debug.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
                 std.debug.print("{?}\n", .{marker});
             }
 
-            if (!soi_found) {
+            if (!sos_found) {
                 try self.markers.put(marker, i);
                 switch (marker) {
                     .startOfImage => {},
                     .endOfImage => {
                         break;
                     },
+                    .startOfFrame2 => {
+                        return ParserError.ProgressiveDCTUnsupported;
+                    },
                     .defineRestartInterval => {
                         // restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], std.builtin.Endian.Big); // skip two bytes to find the length we need to skip
                         i += 4; // NOTE: HACK
                     },
                     .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
-                        soi_found = true;
+                        sos_found = true;
                     },
                     // .defineHuffmanTable => {
                     //     i += 2;
@@ -183,6 +187,7 @@ const Parser = struct {
 
     const ParserError = error{
         NoDefineHuffmanTableMarkerFound,
+        ProgressiveDCTUnsupported,
     };
 };
 
