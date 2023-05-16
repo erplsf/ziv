@@ -56,6 +56,11 @@ const Parser = struct {
         self.markers.deinit();
     }
 
+    pub fn decode(self: *Self) !void {
+        try self.parseMarkers();
+        try self.decodeSoF();
+    }
+
     pub fn parseMarkers(self: *Self) !void {
         var i: usize = 0;
         var sos_found = false;
@@ -180,6 +185,10 @@ const Parser = struct {
         }
     }
 
+    fn decodeSoF(self: *Self) !void {
+        _ = self;
+    }
+
     pub fn buildHuffmanTables(self: *Self) !void {
         const dhtPosition = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoDefineHuffmanTableMarkerFound;
         _ = dhtPosition;
@@ -212,8 +221,7 @@ pub fn main() !void {
     var parser: Parser = Parser.init(allocator, buffer);
     defer parser.deinit();
 
-    try parser.parseMarkers();
-    try parser.buildHuffmanTables();
+    try parser.decode();
 
     // var it = parser.markers.keyIterator();
     // while (it.next()) |key| {
