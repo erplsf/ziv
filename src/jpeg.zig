@@ -9,8 +9,7 @@ const Marker = enum(u16) {
     app13 = 0xffed,
     app14 = 0xffee,
     quantizationTable = 0xffdb,
-    startOfFrame0 = 0xffc0,
-    startOfFrame2 = 0xffc2,
+    startOfFrame0 = 0xffc0, // TODO: replace withc explicit check for sof0 frame as only supported after whole search
     defineHuffmanTable = 0xffc4,
     startOfScan = 0xffda,
     endOfImage = 0xffd9,
@@ -37,6 +36,10 @@ const QuantizationTableHeader = packed struct {
         Ac = 0x1,
     };
 };
+
+const ComponentInformation = struct {
+    id: u8, // component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
+}
 
 const Parser = struct {
     const Self = @This();
@@ -83,9 +86,6 @@ const Parser = struct {
                     .startOfImage => {},
                     .endOfImage => {
                         break;
-                    },
-                    .startOfFrame2 => {
-                        return ParserError.ProgressiveDCTUnsupported;
                     },
                     .defineRestartInterval => {
                         // restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], std.builtin.Endian.Big); // skip two bytes to find the length we need to skip
@@ -185,8 +185,39 @@ const Parser = struct {
         }
     }
 
-    fn decodeSoF(self: *Self) !void {
-        _ = self;
+    fn decodeSoF(self: *Self) !void { // NOTE: we only support SOF0
+        var i = self.markers.get(Marker.startOfFrame0).?;
+        i += 4; // skip marker and block length
+
+        const precision = self.data[i];
+        std.debug.print("precision: {d}\n", .{precision});
+        i += 1;
+        const lineCount = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
+        std.debug.print("lineCount: {d}\n", .{lineCount});
+        i += 2;
+        const columnCount = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
+        std.debug.print("columnCount: {d}\n", .{columnCount});
+        i += 2;
+        const imageComponentCount = self.data[i];
+        std.debug.print("imageComponentCount: {d}\n\n", .{imageComponentCount});
+        i += 1;
+
+        for (0..imageComponentCount) |currentComponentIndex| {
+            std.debug.print("component {d}, value {d}\n", .{ currentComponentIndex, self.data[i] });
+            i += 1;
+
+            var stream = std.io.fixedBufferStream(self.data[i..]);
+            var reader = std.io.bitReader(.Big, stream.reader());
+            var out_bits: usize = undefined;
+            const horizontalSampling = try reader.readBits(u4, 4, &out_bits);
+            std.debug.print("horizontalSampling: {d}\n", .{horizontalSampling});
+            const verticalSampling = try reader.readBits(u4, 4, &out_bits);
+            std.debug.print("verticalSampling: {d}\n", .{verticalSampling});
+            i += 1;
+            const qTableDestination = self.data[i];
+            std.debug.print("qTableDestination: {d}\n\n", .{qTableDestination});
+            i += 1;
+        }
     }
 
     pub fn buildHuffmanTables(self: *Self) !void {

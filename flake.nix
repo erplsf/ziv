@@ -45,7 +45,8 @@
       devShells.${system}.default = pkgs.mkShell.override {
         stdenv = oldPkgs.stdenv;
       } { # override stdenv for mkShell call
-        buildInputs = buildInputs ++ [ zls.packages.${system}.default ];
+        buildInputs = buildInputs
+          ++ [ zls.packages.${system}.default pkgs.libjpeg pkgs.hexyl ];
       };
       defaultPackage.${system} = pkgs.stdenv.mkDerivation {
         pname = "ziv";
