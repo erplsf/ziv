@@ -37,9 +37,12 @@ const QuantizationTableHeader = packed struct {
     };
 };
 
-const ComponentInformation = struct {
-    id: u8, // component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
-}
+const ComponentInformation = packed struct {
+    id: u8, // NOTE: component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
+    horizontalSamples: u4,
+    verticalSamples: u4,
+    qTableDestination: u8,
+};
 
 const Parser = struct {
     const Self = @This();
@@ -49,6 +52,7 @@ const Parser = struct {
     pos: usize = 0,
 
     markers: std.AutoHashMap(Marker, usize),
+    componentsTable: []ComponentInformation = undefined,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) Self {
         const markers = std.AutoHashMap(Marker, usize).init(allocator);
@@ -57,6 +61,7 @@ const Parser = struct {
 
     pub fn deinit(self: *Self) void {
         self.markers.deinit();
+        self.allocator.destroy(self.componentsTable);
     }
 
     pub fn decode(self: *Self) !void {
@@ -202,21 +207,14 @@ const Parser = struct {
         std.debug.print("imageComponentCount: {d}\n\n", .{imageComponentCount});
         i += 1;
 
-        for (0..imageComponentCount) |currentComponentIndex| {
-            std.debug.print("component {d}, value {d}\n", .{ currentComponentIndex, self.data[i] });
-            i += 1;
+        var componentTables = try self.allocator.alloc(ComponentInformation, imageComponentCount);
 
-            var stream = std.io.fixedBufferStream(self.data[i..]);
-            var reader = std.io.bitReader(.Big, stream.reader());
-            var out_bits: usize = undefined;
-            const horizontalSampling = try reader.readBits(u4, 4, &out_bits);
-            std.debug.print("horizontalSampling: {d}\n", .{horizontalSampling});
-            const verticalSampling = try reader.readBits(u4, 4, &out_bits);
-            std.debug.print("verticalSampling: {d}\n", .{verticalSampling});
-            i += 1;
-            const qTableDestination = self.data[i];
-            std.debug.print("qTableDestination: {d}\n\n", .{qTableDestination});
-            i += 1;
+        const packedComponentSize = 3;
+
+        for (0..imageComponentCount) |index| {
+            const offset = index * packedComponentSize;
+            @memcpy(@ptrCast([*]u8, componentTables[index..].ptr), self.data[i + offset ..].ptr, packedComponentSize); // HACK: unsafe but works :)
+            std.debug.print("table: {?}\n", .{componentTables[index]});
         }
     }
 
