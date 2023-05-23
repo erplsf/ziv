@@ -44,6 +44,8 @@ const ComponentInformation = packed struct {
     qTableDestination: u8,
 };
 
+const HuffmanTable = std.AutoHashMap(u8, u16);
+
 const Parser = struct {
     const Self = @This();
 
@@ -53,6 +55,7 @@ const Parser = struct {
 
     markers: std.AutoHashMap(Marker, usize),
     componentsTable: []ComponentInformation = undefined,
+    huffmanTables: [][]HuffmanTable = undefined,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) Self {
         const markers = std.AutoHashMap(Marker, usize).init(allocator);
@@ -67,6 +70,7 @@ const Parser = struct {
     pub fn decode(self: *Self) !void {
         try self.parseMarkers();
         try self.decodeSoF();
+        try self.buildHuffmanTables();
     }
 
     pub fn parseMarkers(self: *Self) !void {
@@ -190,8 +194,9 @@ const Parser = struct {
         }
     }
 
-    fn decodeSoF(self: *Self) !void { // NOTE: we only support SOF0
-        var i = self.markers.get(Marker.startOfFrame0).?;
+    // NOTE: we only support SOF0
+    fn decodeSoF(self: *Self) !void {
+        var i = self.markers.get(Marker.startOfFrame0).?; // TODO: return error if marker not found
         i += 4; // skip marker and block length
 
         const precision = self.data[i];
@@ -211,16 +216,55 @@ const Parser = struct {
 
         const packedComponentSize = 3;
 
+        var destinationIdentifierSet = std.AutoHashMap(u8, void).init(self.allocator);
+        defer destinationIdentifierSet.deinit();
+
         for (0..imageComponentCount) |index| {
             const offset = index * packedComponentSize;
             @memcpy(@ptrCast([*]u8, componentTables[index..].ptr), self.data[i + offset ..].ptr, packedComponentSize); // HACK: unsafe but works :)
+            try destinationIdentifierSet.put(componentTables[index].qTableDestination, {});
             std.debug.print("table: {?}\n", .{componentTables[index]});
         }
+
+        std.debug.print("total unique qTables: {d}\n", .{destinationIdentifierSet.count()});
     }
 
     pub fn buildHuffmanTables(self: *Self) !void {
-        const dhtPosition = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoDefineHuffmanTableMarkerFound;
-        _ = dhtPosition;
+        var startIndex = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoDefineHuffmanTableMarkerFound;
+        var i = startIndex;
+        i += 2; // skip marker
+        const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
+        i += 2;
+
+        const endIndex = startIndex + full_block_length;
+
+        while (i < endIndex) {
+            const tableClass = @ptrCast(*const HuffmanTableHeader, &self.data[i]);
+            std.debug.print("HTH: {?}\n", .{tableClass});
+            i += 1;
+
+            const lengths = @ptrCast(*const [16]u8, self.data[i .. i + 16]);
+            i += 16;
+
+            std.debug.print("lengths: ", .{});
+            utils.slicePrint(u8, lengths);
+            std.debug.print("\n", .{});
+
+            var code_map = std.AutoHashMap(u8, u16).init(self.allocator);
+            var code_candidate: u16 = 0;
+            var code_index: usize = 0;
+
+            while (code_index < 16) : (code_index += 1) {
+                const code_count_for_index = lengths[code_index];
+                var current_code_index: usize = 0;
+                while (current_code_index < code_count_for_index) : (current_code_index += 1) {
+                    try code_map.put(self.data[i], code_candidate);
+                    i += 1;
+                    code_candidate += 1;
+                }
+                code_candidate <<= 1; // shift to the left (with zero in front);
+            }
+        }
     }
 
     const ParserError = error{
