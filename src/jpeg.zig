@@ -55,7 +55,7 @@ const Parser = struct {
 
     markers: std.AutoHashMap(Marker, usize),
     componentsTable: []ComponentInformation = undefined,
-    huffmanTables: [][]HuffmanTable = undefined,
+    huffmanTables: [2][2]HuffmanTable = undefined, // HACK: hardcode numbers for baseline sequential DCT
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) Self {
         const markers = std.AutoHashMap(Marker, usize).init(allocator);
