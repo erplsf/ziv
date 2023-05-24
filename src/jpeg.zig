@@ -28,12 +28,12 @@ const HuffmanTableHeader = packed struct {
 };
 
 const QuantizationTableHeader = packed struct {
-    class: Class,
+    precision: Precision,
     destinationIdentifier: u4,
 
-    const Class = enum(u4) {
-        DcOrLossless = 0x0,
-        Ac = 0x1,
+    const Precision = enum(u4) {
+        @"8bit" = 0x0,
+        @"16bit" = 0x1,
     };
 };
 
@@ -54,8 +54,8 @@ const Parser = struct {
     pos: usize = 0,
 
     markers: std.AutoHashMap(Marker, usize),
-    componentsTable: []ComponentInformation = undefined,
-    huffmanTables: [2][2]HuffmanTable = undefined, // HACK: hardcode numbers for baseline sequential DCT
+    componentTables: [3]ComponentInformation = undefined, // HACK: hardcoded numbers for JFIF Y/Cb/Cr
+    huffmanTables: [2][2]HuffmanTable = undefined, // HACK: hardcoded numbers for baseline sequential DCT
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) Self {
         const markers = std.AutoHashMap(Marker, usize).init(allocator);
@@ -64,13 +64,18 @@ const Parser = struct {
 
     pub fn deinit(self: *Self) void {
         self.markers.deinit();
-        self.allocator.destroy(self.componentsTable);
+        for (0..2) |dcAc| {
+            for (0..2) |destination| {
+                self.huffmanTables[dcAc][destination].deinit();
+            }
+        }
     }
 
     pub fn decode(self: *Self) !void {
         try self.parseMarkers();
         try self.decodeSoF();
         try self.buildHuffmanTables();
+        try self.decodeQuantizationTables();
     }
 
     pub fn parseMarkers(self: *Self) !void {
@@ -196,7 +201,7 @@ const Parser = struct {
 
     // NOTE: we only support SOF0
     fn decodeSoF(self: *Self) !void {
-        var i = self.markers.get(Marker.startOfFrame0).?; // TODO: return error if marker not found
+        var i = self.markers.get(Marker.startOfFrame0) orelse return ParserError.NoRequiredMarkerFound;
         i += 4; // skip marker and block length
 
         const precision = self.data[i];
@@ -212,8 +217,6 @@ const Parser = struct {
         std.debug.print("imageComponentCount: {d}\n\n", .{imageComponentCount});
         i += 1;
 
-        var componentTables = try self.allocator.alloc(ComponentInformation, imageComponentCount);
-
         const packedComponentSize = 3;
 
         var destinationIdentifierSet = std.AutoHashMap(u8, void).init(self.allocator);
@@ -221,16 +224,16 @@ const Parser = struct {
 
         for (0..imageComponentCount) |index| {
             const offset = index * packedComponentSize;
-            @memcpy(@ptrCast([*]u8, componentTables[index..].ptr), self.data[i + offset ..].ptr, packedComponentSize); // HACK: unsafe but works :)
-            try destinationIdentifierSet.put(componentTables[index].qTableDestination, {});
-            std.debug.print("table: {?}\n", .{componentTables[index]});
+            @memcpy(@ptrCast([*]u8, self.componentTables[index..].ptr), self.data[i + offset ..].ptr, packedComponentSize); // HACK: unsafe but works :)
+            try destinationIdentifierSet.put(self.componentTables[index].qTableDestination, {});
+            std.debug.print("table: {?}\n", .{self.componentTables[index]});
         }
 
         std.debug.print("total unique qTables: {d}\n", .{destinationIdentifierSet.count()});
     }
 
-    pub fn buildHuffmanTables(self: *Self) !void {
-        var startIndex = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoDefineHuffmanTableMarkerFound;
+    fn buildHuffmanTables(self: *Self) !void {
+        var startIndex = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoRequiredMarkerFound;
         var i = startIndex;
         i += 2; // skip marker
         const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
@@ -264,11 +267,38 @@ const Parser = struct {
                 }
                 code_candidate <<= 1; // shift to the left (with zero in front);
             }
+
+            self.huffmanTables[@enumToInt(tableClass.class)][tableClass.destinationIdentifier] = code_map;
+        }
+    }
+
+    fn decodeQuantizationTables(self: *Self) !void {
+        var startIndex = self.markers.get(Marker.quantizationTable) orelse return ParserError.NoRequiredMarkerFound;
+        var i = startIndex;
+        i += 2; // skip marker
+        const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
+        std.debug.print("fbl: {d}\n", .{full_block_length});
+        i += 2;
+
+        const endIndex = (startIndex + 2) + full_block_length;
+
+        while (i < endIndex) {
+            const tableHeader = @ptrCast(*const QuantizationTableHeader, &self.data[i]);
+            std.debug.print("QTH: {?}\n", .{tableHeader});
+            i += 1;
+
+            const elements = @ptrCast(*const [64]u8, self.data[i .. i + 64]);
+
+            std.debug.print("elements: ", .{});
+            utils.slicePrint(u8, elements);
+            std.debug.print("\n", .{});
+
+            i += 64;
         }
     }
 
     const ParserError = error{
-        NoDefineHuffmanTableMarkerFound,
+        NoRequiredMarkerFound,
         ProgressiveDCTUnsupported,
     };
 };
