@@ -9,7 +9,7 @@ const Marker = enum(u16) {
     app13 = 0xffed,
     app14 = 0xffee,
     quantizationTable = 0xffdb,
-    startOfFrame0 = 0xffc0, // TODO: replace withc explicit check for sof0 frame as only supported after whole search
+    startOfFrame0 = 0xffc0,
     defineHuffmanTable = 0xffc4,
     startOfScan = 0xffda,
     endOfImage = 0xffd9,
@@ -18,8 +18,9 @@ const Marker = enum(u16) {
 };
 
 const HuffmanTableHeader = packed struct {
-    class: Class,
+    // NOTE: order reversed, because of big-endian
     destinationIdentifier: u4,
+    class: Class,
 
     const Class = enum(u4) {
         DcOrLossless = 0x0,
@@ -28,13 +29,21 @@ const HuffmanTableHeader = packed struct {
 };
 
 const QuantizationTableHeader = packed struct {
-    precision: Precision,
+    const Self = @This();
+
+    // NOTE: order reversed, because of big-endian
     destinationIdentifier: u4,
+    precision: Precision,
 
     const Precision = enum(u4) {
         @"8bit" = 0x0,
         @"16bit" = 0x1,
     };
+};
+
+const QuantizationTable = struct {
+    header: QuantizationTableHeader,
+    table: @Vector(64, u8), // NOTE: it's always u8 for Sequential DCT
 };
 
 const ComponentInformation = packed struct {
@@ -56,6 +65,7 @@ const Parser = struct {
     markers: std.AutoHashMap(Marker, usize),
     componentTables: [3]ComponentInformation = undefined, // HACK: hardcoded numbers for JFIF Y/Cb/Cr
     huffmanTables: [2][2]HuffmanTable = undefined, // HACK: hardcoded numbers for baseline sequential DCT
+    quantizationTables: [2]QuantizationTable = undefined,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) Self {
         const markers = std.AutoHashMap(Marker, usize).init(allocator);
@@ -76,6 +86,7 @@ const Parser = struct {
         try self.decodeSoF();
         try self.buildHuffmanTables();
         try self.decodeQuantizationTables();
+        try self.decodeStarOfScan();
     }
 
     pub fn parseMarkers(self: *Self) !void {
@@ -277,24 +288,30 @@ const Parser = struct {
         var i = startIndex;
         i += 2; // skip marker
         const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], std.builtin.Endian.Big);
-        std.debug.print("fbl: {d}\n", .{full_block_length});
         i += 2;
 
         const endIndex = (startIndex + 2) + full_block_length;
 
-        while (i < endIndex) {
-            const tableHeader = @ptrCast(*const QuantizationTableHeader, &self.data[i]);
-            std.debug.print("QTH: {?}\n", .{tableHeader});
+        var qIndex: usize = 0;
+        while (i < endIndex) : (qIndex += 1) {
+            const tableHeader = @bitCast(QuantizationTableHeader, self.data[i]);
             i += 1;
 
             const elements = @ptrCast(*const [64]u8, self.data[i .. i + 64]);
+            var table: @Vector(64, u8) = elements.*;
 
-            std.debug.print("elements: ", .{});
-            utils.slicePrint(u8, elements);
-            std.debug.print("\n", .{});
+            self.quantizationTables[qIndex].header = tableHeader;
+            self.quantizationTables[qIndex].table = table;
+
+            std.debug.print("{?}\n", .{self.quantizationTables[qIndex]});
 
             i += 64;
         }
+    }
+
+    fn decodeStarOfScan(self: *Self) !void {
+        var startIndex = self.markers.get(Marker.startOfScan) orelse return ParserError.NoRequiredMarkerFound;
+        _ = startIndex;
     }
 
     const ParserError = error{
