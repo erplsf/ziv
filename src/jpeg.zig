@@ -191,7 +191,7 @@ const Parser = struct {
 
         for (0..imageComponentCount) |index| {
             const offset = index * packedComponentSize;
-            @memcpy(@ptrCast([*]u8, self.componentTables[index..].ptr), self.data[i + offset ..].ptr, packedComponentSize); // HACK: unsafe but works :)
+            @memcpy(@ptrCast([*]u8, self.componentTables[index..].ptr), self.data[i + offset .. i + offset + packedComponentSize]); // HACK: unsafe but works :)
             try destinationIdentifierSet.put(self.componentTables[index].qTableDestination, {});
             dPrint("table: {?}\n", .{self.componentTables[index]});
         }
