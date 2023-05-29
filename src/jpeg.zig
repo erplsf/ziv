@@ -408,7 +408,7 @@ pub fn main() !void {
 
     var path_buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     // const path = try std.fs.realpath("res/8x8.jpg", &path_buffer);
-    const path = try std.fs.realpath("res/cat.jpg", &path_buffer);
+    const path = try std.fs.realpath("res/8x8.jpg", &path_buffer);
 
     dPrint("path: {s}\n", .{path});
 
