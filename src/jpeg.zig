@@ -404,11 +404,18 @@ const Parser = struct {
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+
+    _ = args.skip(); // skip first arg, which is a filename
+
+    const filename = args.next().?; // fetch the first argument, which must be present
+
     var path_buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-    // const path = try std.fs.realpath("res/8x8.jpg", &path_buffer);
-    const path = try std.fs.realpath("res/8x8.jpg", &path_buffer);
+    const path = try std.fs.realpath(filename, &path_buffer);
 
     dPrint("path: {s}\n", .{path});
 
