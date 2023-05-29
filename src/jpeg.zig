@@ -317,11 +317,14 @@ const Parser = struct {
     fn cleanByteStuffing(self: *Self) !void {
         const startIndex = self.imageDataPos;
         const needle = [_]u8{ 0xff, 0x00 };
-        dPrint("scanData starts at {x}\n", .{startIndex});
+        dPrint("[cleanByteStuffing] scanData starts at {x}\n", .{startIndex});
+        var zerCount: usize = 0;
         while (std.mem.indexOf(u8, self.data[startIndex..], &needle)) |index| {
-            dPrint("found 0xff, 0x00 at {x}\n", .{startIndex + index});
+            // dPrint("found 0xff, 0x00 at {x}\n", .{startIndex + index});
             _ = self.list.orderedRemove(startIndex + index + 1); // remove the 0x00 byte
+            zerCount += 1;
         }
+        dPrint("[cleanByteStuffing] found and deleted {d} zeroes\n", .{zerCount});
     }
 
     fn decodeImageData(self: *Self) !void {
@@ -404,7 +407,8 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     var path_buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-    const path = try std.fs.realpath("res/8x8.jpg", &path_buffer);
+    // const path = try std.fs.realpath("res/8x8.jpg", &path_buffer);
+    const path = try std.fs.realpath("res/cat.jpg", &path_buffer);
 
     dPrint("path: {s}\n", .{path});
 
