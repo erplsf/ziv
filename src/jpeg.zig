@@ -82,13 +82,14 @@ const HuffmanTable = std.AutoHashMap(HTKey, u8); // pairing between length and c
 
 const Parser = struct {
     const Self = @This();
+    const MarkerList = std.ArrayList(usize);
 
     allocator: std.mem.Allocator,
     list: std.ArrayList(u8),
     data: []u8,
     imageDataPos: usize = undefined,
 
-    markers: std.AutoHashMap(Marker, usize),
+    markers: std.AutoHashMap(Marker, MarkerList),
     componentTables: [3]ComponentInformation = undefined, // HACK: hardcoded numbers for JFIF Y/Cb/Cr
     huffmanTables: [2][2]HuffmanTable = undefined, // HACK: hardcoded numbers for baseline sequential DCT
     quantizationTables: [2]QuantizationTable = undefined,
@@ -99,7 +100,7 @@ const Parser = struct {
     pHeight: usize = undefined,
 
     pub fn init(allocator: std.mem.Allocator, data: []u8) Self {
-        const markers = std.AutoHashMap(Marker, usize).init(allocator);
+        const markers = std.AutoHashMap(Marker, MarkerList).init(allocator);
         const list = std.ArrayList(u8).fromOwnedSlice(allocator, data);
         return .{ .allocator = allocator, .list = list, .data = list.items, .markers = markers };
     }
@@ -118,13 +119,16 @@ const Parser = struct {
         try self.parseMarkers();
         try self.decodeSoF();
         try self.buildHuffmanTables();
-        try self.decodeQuantizationTables();
-        try self.decodeStarOfScan();
-        try self.cleanByteStuffing();
-        try self.decodeImageData();
+        // try self.decodeQuantizationTables();
+        // try self.decodeStarOfScan();
+        // try self.cleanByteStuffing();
+        // try self.decodeImageData();
     }
 
     pub fn parseMarkers(self: *Self) !void {
+        const pp = utils.PrefixPrinter("[parseMarkers] "){};
+        pp.print("↓\n", .{});
+
         var i: usize = 0;
         var sos_found = false;
 
@@ -136,52 +140,64 @@ const Parser = struct {
             const marker = @intToEnum(Marker, value);
 
             if (!sos_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
-                dPrint("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
-                dPrint("{?}\n", .{marker});
+                pp.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
+                pp.print("{?}\n", .{marker});
             }
 
-            if (!sos_found) {
-                try self.markers.put(marker, i);
-                switch (marker) {
-                    .startOfImage => {},
-                    .endOfImage => {
-                        break;
-                    },
-                    .defineRestartInterval => {
-                        // restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
-                        i += 4; // NOTE: HACK
-                    },
-                    .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
-                        sos_found = true;
-                    },
-                    else => {
-                        const block_length = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
-                        // dPrint("block length: 0x{?} -> {d}\n", .{ std.fmt.fmtSliceHexLower(self.data[i + 2 .. i + 4]), block_length });
-                        i += block_length;
-                    },
-                }
+            var entry = try self.markers.getOrPut(marker);
+            if (!entry.found_existing) {
+                var list = MarkerList.init(self.allocator);
+                entry.value_ptr.* = list;
+            }
+
+            try entry.value_ptr.*.append(i);
+
+            switch (marker) {
+                .startOfImage => {},
+                .endOfImage => {
+                    break;
+                },
+                .defineRestartInterval => {
+                    // restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
+                    i += 4; // NOTE: HACK
+                },
+                .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
+                    sos_found = true;
+                },
+                else => {
+                    const block_length = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
+                    // dPrint("block length: 0x{?} -> {d}\n", .{ std.fmt.fmtSliceHexLower(self.data[i + 2 .. i + 4]), block_length });
+                    i += block_length;
+                },
             }
         }
+        pp.print("↑\n\n", .{});
     }
 
     // NOTE: we only support SOF0
     fn decodeSoF(self: *Self) !void {
-        var i = self.markers.get(Marker.startOfFrame0) orelse return ParserError.NoRequiredMarkerFound;
+        const pp = utils.PrefixPrinter("[decodeSoF] "){};
+        pp.print("↓\n", .{});
+
+        var sofList: MarkerList = self.markers.get(Marker.startOfFrame0) orelse return ParserError.NoRequiredMarkerFound;
+        std.debug.assert(sofList.items.len == 1);
+        var i: usize = sofList.items[0];
+
         i += 4; // skip marker and block length
 
         const precision = self.data[i];
-        dPrint("precision: {d}\n", .{precision});
+        pp.print("precision: {d}\n", .{precision});
         i += 1;
         const lineCount = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-        dPrint("lineCount: {d}\n", .{lineCount});
+        pp.print("lineCount: {d}\n", .{lineCount});
         self.pHeight = lineCount;
         i += 2;
         const columnCount = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-        dPrint("columnCount: {d}\n", .{columnCount});
+        pp.print("columnCount: {d}\n", .{columnCount});
         self.pWidth = lineCount;
         i += 2;
         const imageComponentCount = self.data[i];
-        dPrint("imageComponentCount: {d}\n\n", .{imageComponentCount});
+        pp.print("imageComponentCount: {d}\n", .{imageComponentCount});
         i += 1;
 
         const packedComponentSize = 3;
@@ -193,58 +209,68 @@ const Parser = struct {
             const offset = index * packedComponentSize;
             @memcpy(@ptrCast([*]u8, self.componentTables[index..].ptr), self.data[i + offset .. i + offset + packedComponentSize]); // HACK: unsafe but works :)
             try destinationIdentifierSet.put(self.componentTables[index].qTableDestination, {});
-            dPrint("table: {?}\n", .{self.componentTables[index]});
+            pp.print("table: {?}\n", .{self.componentTables[index]});
         }
 
-        dPrint("total unique qTables: {d}\n", .{destinationIdentifierSet.count()});
+        pp.print("total unique qTables: {d}\n", .{destinationIdentifierSet.count()});
+        pp.print("↑\n\n", .{});
     }
 
     fn buildHuffmanTables(self: *Self) !void {
-        var startIndex = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoRequiredMarkerFound;
-        var i = startIndex;
-        i += 2; // skip marker
-        const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-        i += 2;
+        const pp = utils.PrefixPrinter("[buildHuffmanTables] "){};
+        pp.print("↓\n", .{});
 
-        const endIndex = startIndex + full_block_length;
+        var htList: MarkerList = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoRequiredMarkerFound;
+        std.debug.assert(htList.items.len >= 1);
+        pp.print("found {d} markers\n", .{htList.items.len});
+        for (htList.items) |startIndex| {
+            var i: usize = startIndex;
+            i += 2; // skip marker
+            const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
+            i += 2;
 
-        while (i < endIndex) {
-            const tableClass = @ptrCast(*const HuffmanTableHeader, &self.data[i]);
-            dPrint("HTH: {?}\n", .{tableClass});
-            i += 1;
+            const endIndex = startIndex + 2 + full_block_length;
 
-            const lengths = @ptrCast(*const [16]u8, self.data[i .. i + 16]);
-            i += 16;
+            while (i < endIndex) {
+                const tableClass = @ptrCast(*const HuffmanTableHeader, &self.data[i]);
+                pp.print("HTH: {?}\n", .{tableClass});
+                i += 1;
 
-            dPrint("lengths: ", .{});
-            utils.slicePrint(u8, lengths);
-            dPrint("\n", .{});
+                const lengths = @ptrCast(*const [16]u8, self.data[i .. i + 16]);
+                i += 16;
 
-            var code_map = HuffmanTable.init(self.allocator);
-            var code_candidate: u16 = 0;
-            var code_index: u4 = 0;
+                pp.print("lengths: ", .{});
+                utils.slicePrint(u8, lengths);
+                dPrint("\n", .{});
 
-            while (true) {
-                const code_count_for_index = lengths[code_index];
-                var current_code_index: usize = 0;
-                while (current_code_index < code_count_for_index) : (current_code_index += 1) {
-                    const value = readInt(u8, &self.data[i]);
-                    try code_map.put(.{ .length = code_index, .code = code_candidate }, value);
-                    i += 1;
-                    code_candidate += 1;
+                var code_map = HuffmanTable.init(self.allocator);
+                var code_candidate: u16 = 0;
+                var code_index: u4 = 0;
+
+                while (true) {
+                    const code_count_for_index = lengths[code_index];
+                    var current_code_index: usize = 0;
+                    while (current_code_index < code_count_for_index) : (current_code_index += 1) {
+                        const value = readInt(u8, &self.data[i]);
+                        try code_map.put(.{ .length = code_index, .code = code_candidate }, value);
+                        // _ = code_map.get(.{ .length = code_index, .code = code_candidate });
+                        i += 1;
+                        code_candidate += 1;
+                    }
+                    code_candidate <<= 1; // shift to the left (with zero in front);
+                    if (code_index != 15) code_index += 1 else break;
                 }
-                code_candidate <<= 1; // shift to the left (with zero in front);
-                if (code_index != 15) code_index += 1 else break;
+
+                // var kvIt = code_map.iterator();
+                // while (kvIt.next()) |kv| {
+                //     dPrint("kv: {?} -> {b}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
+                // }
+
+                self.huffmanTables[tableClass.destinationIdentifier][@enumToInt(tableClass.class)] = code_map;
             }
-
-            var kvIt = code_map.iterator();
-            _ = kvIt;
-            // while (kvIt.next()) |kv| {
-            //     dPrint("kv: {?} -> {b}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
-            // }
-
-            self.huffmanTables[tableClass.destinationIdentifier][@enumToInt(tableClass.class)] = code_map;
         }
+
+        pp.print("↑\n\n", .{});
     }
 
     fn decodeQuantizationTables(self: *Self) !void {
@@ -358,7 +384,8 @@ const Parser = struct {
                 const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
                 // dPrint("bits: {b}\n", .{bitsRead});
 
-                const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
+                dPrint("trying to get length (+1), code: {d}, {b}\n", .{ bitsToRead + 1, bitsRead });
+                const maybeVal = huffmanTable.get(.{ .length = bitsToRead + 1, .code = bitsRead });
                 if (maybeVal) |val| {
                     // dPrint("foundVal: {d}: {b} -> {b}\n", .{ bitsToRead + 1, bitsRead, val });
                     break val;
@@ -417,7 +444,7 @@ pub fn main() !void {
     var path_buffer: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     const path = try std.fs.realpath(filename, &path_buffer);
 
-    dPrint("path: {s}\n", .{path});
+    dPrint("[main] file path: {s}\n\n", .{path});
 
     const file = try std.fs.openFileAbsolute(path, .{});
     defer file.close();

@@ -9,3 +9,14 @@ pub fn slicePrint(comptime T: type, slice: []const T) void {
     }
     std.debug.print("]", .{});
 }
+
+pub fn PrefixPrinter(comptime prefix: []const u8) type {
+    return struct {
+        const Self = @This();
+
+        pub fn print(self: Self, comptime fmt: []const u8, args: anytype) void {
+            _ = self;
+            std.debug.print(prefix ++ fmt, args);
+        }
+    };
+}
