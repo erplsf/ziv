@@ -64,7 +64,7 @@ const ComponentInformation = packed struct {
     qTableDestination: u8,
 };
 
-const ComponentDestinationSelectors = packed struct {
+const ComponentDestinationSelectors = packed struct { // NOTE: why I don't need to reverse order here? or do I still need to do so?
     dcDestinationSelector: u4,
     acDestinationSelector: u4,
 };
