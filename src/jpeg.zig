@@ -32,21 +32,17 @@ const Block = struct {
     components: [3][BLOCK_SIZE]i8,
 };
 
-const HuffmanTableHeader = packed struct {
-    // HACK: wtf, order reversed, because of big-endian
+const HuffmanTableHeader = packed struct { // NOTE/HACK: order reversed because of endianness
     destinationIdentifier: u4,
-    class: Class,
+    class: HuffmanTableHeader.ValueType,
 
-    const Class = enum(u4) {
-        DcOrLossless = 0x0,
-        Ac = 0x1,
+    const ValueType = enum(u4) {
+        Dc = 0,
+        Ac = 1,
     };
 };
 
-const QuantizationTableHeader = packed struct {
-    const Self = @This();
-
-    // HACK: wtf, order reversed, because of big-endian
+const QuantizationTableHeader = packed struct { // NOTE/HACK: order reversed because of endianness
     destinationIdentifier: u4,
     precision: Precision,
 
@@ -119,10 +115,10 @@ const Parser = struct {
         try self.parseMarkers();
         try self.decodeSoF();
         try self.buildHuffmanTables();
-        // try self.decodeQuantizationTables();
-        // try self.decodeStarOfScan();
-        // try self.cleanByteStuffing();
-        // try self.decodeImageData();
+        try self.decodeQuantizationTables();
+        try self.decodeStarOfScan();
+        try self.cleanByteStuffing();
+        try self.decodeImageData();
     }
 
     pub fn parseMarkers(self: *Self) !void {
@@ -141,7 +137,7 @@ const Parser = struct {
 
             if (!sos_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
                 pp.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
-                pp.print("{?}\n", .{marker});
+                dPrint("{?}\n", .{marker});
             }
 
             var entry = try self.markers.getOrPut(marker);
@@ -166,7 +162,7 @@ const Parser = struct {
                 },
                 else => {
                     const block_length = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
-                    // dPrint("block length: 0x{?} -> {d}\n", .{ std.fmt.fmtSliceHexLower(self.data[i + 2 .. i + 4]), block_length });
+                    // pp.print("block length: 0x{?} -> {d}\n", .{ std.fmt.fmtSliceHexLower(self.data[i + 2 .. i + 4]), block_length });
                     i += block_length;
                 },
             }
@@ -232,7 +228,7 @@ const Parser = struct {
             const endIndex = startIndex + 2 + full_block_length;
 
             while (i < endIndex) {
-                const tableClass = @ptrCast(*const HuffmanTableHeader, &self.data[i]);
+                const tableClass = @bitCast(HuffmanTableHeader, readInt(u8, &self.data[i]));
                 pp.print("HTH: {?}\n", .{tableClass});
                 i += 1;
 
@@ -261,10 +257,10 @@ const Parser = struct {
                     if (code_index != 15) code_index += 1 else break;
                 }
 
-                // var kvIt = code_map.iterator();
-                // while (kvIt.next()) |kv| {
-                //     dPrint("kv: {?} -> {b}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
-                // }
+                var kvIt = code_map.iterator();
+                while (kvIt.next()) |kv| {
+                    pp.print("kv: {?} -> {b}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
+                }
 
                 self.huffmanTables[tableClass.destinationIdentifier][@enumToInt(tableClass.class)] = code_map;
             }
@@ -274,33 +270,48 @@ const Parser = struct {
     }
 
     fn decodeQuantizationTables(self: *Self) !void {
-        var startIndex = self.markers.get(Marker.quantizationTable) orelse return ParserError.NoRequiredMarkerFound;
-        var i = startIndex;
-        i += 2; // skip marker
-        const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-        i += 2;
+        const pp = utils.PrefixPrinter("[decodeQuantizationTables] "){};
+        pp.print("↓\n", .{});
 
-        const endIndex = (startIndex + 2) + full_block_length;
+        var qtList: MarkerList = self.markers.get(Marker.quantizationTable) orelse return ParserError.NoRequiredMarkerFound;
+        std.debug.assert(qtList.items.len >= 1);
 
-        var qIndex: usize = 0;
-        while (i < endIndex) : (qIndex += 1) {
-            const tableHeader = @bitCast(QuantizationTableHeader, self.data[i]);
-            i += 1;
+        for (qtList.items) |startIndex| {
+            var i: usize = startIndex;
+            i += 2; // skip marker
+            const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
+            i += 2;
 
-            const elements = @ptrCast(*const [64]u8, self.data[i .. i + 64]);
-            var table: @Vector(64, u8) = elements.*;
+            const endIndex = (startIndex + 2) + full_block_length;
 
-            self.quantizationTables[qIndex].header = tableHeader;
-            self.quantizationTables[qIndex].table = table;
+            var qIndex: usize = 0;
+            while (i < endIndex) : (qIndex += 1) {
+                const tableHeader = @bitCast(QuantizationTableHeader, self.data[i]);
+                i += 1;
 
-            dPrint("{?}\n", .{self.quantizationTables[qIndex]});
+                const elements = @ptrCast(*const [64]u8, self.data[i .. i + 64]);
+                var table: @Vector(64, u8) = elements.*;
 
-            i += 64;
+                self.quantizationTables[qIndex].header = tableHeader;
+                self.quantizationTables[qIndex].table = table;
+
+                pp.print("{?}\n", .{self.quantizationTables[qIndex]});
+
+                i += 64;
+            }
         }
+
+        pp.print("↑\n\n", .{});
     }
 
     fn decodeStarOfScan(self: *Self) !void {
-        const startIndex = self.markers.get(Marker.startOfScan) orelse return ParserError.NoRequiredMarkerFound;
+        const pp = utils.PrefixPrinter("[decodeSoF] "){};
+        pp.print("↓\n", .{});
+
+        const sosList: MarkerList = self.markers.get(Marker.startOfScan) orelse return ParserError.NoRequiredMarkerFound;
+        std.debug.assert(sosList.items.len == 1);
+
+        const startIndex = sosList.items[0];
         var i: usize = startIndex;
         i += 2;
 
@@ -309,7 +320,7 @@ const Parser = struct {
         i += 2;
 
         const componentCount = readInt(u8, &self.data[i]);
-        dPrint("componentCount: {d}\n", .{componentCount});
+        pp.print("componentCount: {d}\n", .{componentCount});
         self.componentCount = componentCount;
         i += 1;
 
@@ -317,11 +328,11 @@ const Parser = struct {
             const id = readInt(u8, &self.data[i]);
             i += 1;
             const destinationSelectors = @bitCast(ComponentDestinationSelectors, readInt(u8, &self.data[i]));
-            dPrint("cih: {?}, {?}\n", .{ id, destinationSelectors });
+            i += 1;
+
+            pp.print("cih: {?}, {?}\n", .{ id, destinationSelectors });
 
             self.destinationSelectors[componentIndex] = destinationSelectors;
-
-            i += 1;
         }
 
         const ss = readInt(u8, &self.data[i]); // start of spectral selector, for Seq DCT == 0
@@ -338,28 +349,37 @@ const Parser = struct {
 
         std.debug.assert(i == endIndex); // assert we parsed all the information
         self.imageDataPos = endIndex;
+        pp.print("↑\n\n", .{});
     }
 
     fn cleanByteStuffing(self: *Self) !void {
+        const pp = utils.PrefixPrinter("[cleanByteStuffing] "){};
+        pp.print("↓\n", .{});
+
         const startIndex = self.imageDataPos;
         const needle = [_]u8{ 0xff, 0x00 };
-        dPrint("[cleanByteStuffing] scanData starts at {x}\n", .{startIndex});
+        pp.print("scanData starts at {x}\n", .{startIndex});
         var zerCount: usize = 0;
         while (std.mem.indexOf(u8, self.data[startIndex..], &needle)) |index| {
-            // dPrint("found 0xff, 0x00 at {x}\n", .{startIndex + index});
+            // pp.print("found 0xff, 0x00 at {x}\n", .{startIndex + index});
             _ = self.list.orderedRemove(startIndex + index + 1); // remove the 0x00 byte
             zerCount += 1;
         }
-        dPrint("[cleanByteStuffing] found and deleted {d} zeroes\n", .{zerCount});
+        pp.print("found and deleted {d} zeroes\n", .{zerCount});
+        pp.print("↑\n\n", .{});
     }
 
     fn decodeImageData(self: *Self) !void {
+        const pp = utils.PrefixPrinter("[decodeImageData] "){};
+        pp.print("↓\n", .{});
+        // pp.print("↑\n\n", .{});
+
         const startIndex = self.imageDataPos;
-        dPrint("imageData startIndex: {x}\n", .{startIndex});
+        pp.print("imageData startIndex: {d}\n", .{startIndex});
         var i: usize = startIndex;
 
         const blockCount: usize = @divTrunc(self.pWidth * self.pHeight, 64);
-        dPrint("blockCount: {d}\n", .{blockCount});
+        pp.print("blockCount: {d}\n", .{blockCount});
 
         var currentComponentIndex: usize = 0;
         var dcs: []u8 = try self.allocator.alloc(u8, self.componentCount);
@@ -369,31 +389,35 @@ const Parser = struct {
         var dc: i8 = 0;
 
         var valueIndex: u6 = 0;
-        while (valueIndex < BLOCK_SIZE) {
+        while (valueIndex < BLOCK_SIZE - 1) {
             const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
             const valueTypeIndex = @enumToInt(valueType); // get the index used for accessing arrays
-            dPrint("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
+            // pp.print("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
+
+            // NOTE: am i selecting the right tables? most likely not, as the code overruns EOF
 
             const dcAcHuffmantTableSelector = if (valueType == .Dc) self.destinationSelectors[currentComponentIndex].dcDestinationSelector else self.destinationSelectors[currentComponentIndex].acDestinationSelector; // select correct destination
             const huffmanTable = self.huffmanTables[dcAcHuffmantTableSelector][valueTypeIndex]; // select correct destina
 
-            var bitsToRead: u4 = 0; // initilize count of bits to read
+            var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
             const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
                 var buffer = std.io.fixedBufferStream(self.data[i..]);
                 var bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                 const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
-                // dPrint("bits: {b}\n", .{bitsRead});
+                // pp.print("bits: {b}\n", .{bitsRead});
 
-                dPrint("trying to get length (+1), code: {d}, {b}\n", .{ bitsToRead + 1, bitsRead });
-                const maybeVal = huffmanTable.get(.{ .length = bitsToRead + 1, .code = bitsRead });
+                // pp.print("trying to get length, code: {d}, {b}\n", .{ bitsToRead + 1, bitsRead });
+                const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
                 if (maybeVal) |val| {
-                    // dPrint("foundVal: {d}: {b} -> {b}\n", .{ bitsToRead + 1, bitsRead, val });
+                    // pp.print("foundVal: {d}: {b} -> {b}\n", .{ bitsToRead + 1, bitsRead, val });
                     break val;
                 }
-            } else {
-                return ParserError.NoValidHuffmanCodeFound;
-            };
+            } else return ParserError.NoValidHuffmanCodeFound;
+
             i += (bitsToRead + 1); // move the position forward by how much bits we read
+
+            pp.print("bitsRead: {d}\n", .{bitsToRead + 1});
+            pp.print("i: {d}\n", .{i});
 
             var buffer = std.io.fixedBufferStream(self.data[i..]);
             var bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
@@ -401,25 +425,27 @@ const Parser = struct {
             if (valueType == .Dc) {
                 const bitsRead = try bitReader.readBitsNoEof(u8, value);
                 const dcValue = @bitCast(i8, bitsRead);
-                dPrint("(dc) value: {?}\n", .{dcValue});
+                pp.print("(dc) value: {?}\n", .{dcValue});
                 dc += dcValue;
                 block.components[currentComponentIndex][0] = dc;
-                valueIndex += 1;
             } else {
                 const zeroesCount = value & 0b11110000;
                 const magnitude = value & 0b00001111;
-                dPrint("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
+                pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
                 for (0..zeroesCount) |_| valueIndex += 1;
                 const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
                 const acValue = @bitCast(i8, bitsRead);
                 block.components[currentComponentIndex][valueIndex] = acValue;
             }
+            valueIndex += 1;
+            pp.print("valueIndex: {d}\n", .{valueIndex});
 
-            dPrint("found val: {b}\n", .{value});
-            dPrint("cci: {d}\n", .{currentComponentIndex});
-            currentComponentIndex = (currentComponentIndex + 1) % self.componentCount;
-            if (valueIndex == 4) break;
+            // pp.print("found val: {b}\n", .{value});
+            // pp.print("cci: {d}\n", .{currentComponentIndex});
+            // currentComponentIndex = (currentComponentIndex + 1) % self.componentCount;
+            // if (valueIndex == 4) break;
         }
+        pp.print("↑\n\n", .{});
     }
 
     const ParserError = error{
