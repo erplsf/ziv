@@ -430,6 +430,7 @@ const Parser = struct {
 
                     // pp.print("bufPos before: {x}\n", .{startIndex + buffer.pos});
                     var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
+                    // save the buffer position and bitReader state to restore it later, in case we need to read more bits starting from the same position
                     const currBufPos = buffer.pos;
                     const savedBitReader = bitReader;
                     const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
