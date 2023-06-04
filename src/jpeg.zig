@@ -29,7 +29,7 @@ const Marker = enum(u16) {
 };
 
 const Block = struct {
-    components: [3][BLOCK_SIZE]i8,
+    components: [3][BLOCK_SIZE]i8 = std.mem.zeroes([3][BLOCK_SIZE]i8), // NOTE: do i need it?
 };
 
 const HuffmanTableHeader = packed struct { // NOTE/HACK: order reversed because of endianness
@@ -431,39 +431,48 @@ const Parser = struct {
                     // pp.print("bufPos before: {x}\n", .{startIndex + buffer.pos});
                     var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
                     const currBufPos = buffer.pos;
+                    const savedBitReader = bitReader;
                     const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
+                        // pp.print("bufPos inside, before reading: {d}\n", .{buffer.pos});
                         const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
                         // pp.print("bits: {b}\n", .{bitsRead});
 
-                        // pp.print("bufPos inside, before checking: {d}\n", .{buffer.pos});
+                        // pp.print("bufPos inside, after reading: {d}\n", .{buffer.pos});
                         pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
                         const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
                         if (maybeVal) |val| {
-                            // pp.print("foundVal: length, code: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
+                            pp.print("length, code: val: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
                             break val;
                         }
-                        buffer.pos = currBufPos; // revert buffer position to try to read more bits from beginning
-                        bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
+                        bitReader = savedBitReader;
+                        buffer.pos = currBufPos;
+                        // buffer.pos = currBufPos; // revert buffer position to try to read more bits from beginning
+                        // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                         // pp.print("bufPos inside, after substract: {d}\n", .{buffer.pos});
                     } else return ParserError.NoValidHuffmanCodeFound;
                     // buffer.pos += (bitsToRead + 1); // we have the value here, move buffer forward
                     // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                     // pp.print("bufPos after: {d}\n", .{buffer.pos});
 
-                    // pp.print("foundVal: {b:0>8}\n", .{value});
+                    pp.print("foundVal: {b:0>8}\n", .{value});
 
                     if (valueType == .Dc) {
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @bitCast(i8, bitsRead);
-                        pp.print("(dc) magnitude, value: {d} {?}\n", .{ value, dcValue });
+                        pp.print("(dc) magnitude, value: {d} {b:0>8}\n", .{ value, bitsRead });
                         currentComopnentDC += dcValue;
                         blocks[currentBlockIndex].components[currentComponentIndex][0] = currentComopnentDC;
                     } else {
                         const zeroesCount: u8 = @shrExact(value & 0b11110000, 4);
                         const magnitude: u8 = value & 0b00001111;
                         pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
-                        for (0..zeroesCount) |_| valueIndex += 1;
+                        if (zeroesCount == 0 and magnitude == 0) {
+                            pp.print("FOUND EOB!\n", .{});
+                            break;
+                        }
+                        valueIndex += @truncate(u6, zeroesCount); // NOTE: this is safe, maybe do it above?
                         const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
+                        pp.print("(ac) value: {b:0>8}\n", .{bitsRead});
                         const acValue = @bitCast(i8, bitsRead);
                         blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
                     }
