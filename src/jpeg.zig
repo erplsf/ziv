@@ -84,6 +84,7 @@ const Parser = struct {
     list: std.ArrayList(u8),
     data: []u8,
     imageDataPos: usize = undefined,
+    imageDataEnd: usize = undefined,
 
     markers: std.AutoHashMap(Marker, MarkerList),
     componentTables: [3]ComponentInformation = undefined, // HACK: hardcoded numbers for JFIF Y/Cb/Cr
@@ -131,9 +132,13 @@ const Parser = struct {
         var restartInterval: ?u16 = null;
         _ = restartInterval;
 
-        while (i < self.data.len) : (i += 2) {
+        var skipSize: usize = 2;
+        while (i < self.data.len) {
             const value = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
             const marker = @intToEnum(Marker, value);
+
+            // pp.print("{d} < {d} skipSize: {d}\n", .{ i, self.data.len, skipSize });
+            // pp.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
 
             if (!sos_found or marker == .endOfImage) { // no SoS marker found, treat all data as tokens
                 pp.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
@@ -148,6 +153,16 @@ const Parser = struct {
 
             try entry.value_ptr.*.append(i);
 
+            if (marker == .endOfImage) {
+                self.imageDataEnd = i;
+                break;
+            }
+
+            if (sos_found) {
+                i += skipSize;
+                continue;
+            }
+
             switch (marker) {
                 .startOfImage => {},
                 .endOfImage => {
@@ -159,6 +174,7 @@ const Parser = struct {
                 },
                 .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
                     sos_found = true;
+                    skipSize = 1;
                 },
                 else => {
                     const block_length = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
@@ -166,6 +182,7 @@ const Parser = struct {
                     i += block_length;
                 },
             }
+            i += skipSize;
         }
         pp.print("↑\n\n", .{});
     }
@@ -262,6 +279,7 @@ const Parser = struct {
                     pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
                 }
 
+                pp.print("will set this table at [{d}][{d}]\n", .{ tableClass.destinationIdentifier, @enumToInt(tableClass.class) });
                 self.huffmanTables[tableClass.destinationIdentifier][@enumToInt(tableClass.class)] = code_map;
             }
         }
@@ -376,6 +394,7 @@ const Parser = struct {
 
         const startIndex = self.imageDataPos;
         pp.print("imageData startIndex: {d}\n", .{startIndex});
+        pp.print("imageData length (bytes): {d}\n", .{self.imageDataEnd - self.imageDataPos});
         var i: usize = startIndex;
 
         const blockCount: usize = @divTrunc(self.pWidth * self.pHeight, 64);
@@ -405,19 +424,19 @@ const Parser = struct {
                     // NOTE: am i selecting the right tables? most likely not, as the code overruns EOF
 
                     // pp.print("componentIndex: {d}\n", .{currentComponentIndex});
-                    const dcAcHuffmantTableSelector = if (valueType == .Dc) self.destinationSelectors[currentComponentIndex].dcDestinationSelector else self.destinationSelectors[currentComponentIndex].acDestinationSelector; // select correct destination
-                    const huffmanTable = self.huffmanTables[dcAcHuffmantTableSelector][valueTypeIndex]; // select correct destination
-                    // pp.print("huffmanTable: [{d}][{d}]\n", .{ dcAcHuffmantTableSelector, valueTypeIndex });
+                    const destinationSelector = if (valueType == .Dc) self.destinationSelectors[currentComponentIndex].dcDestinationSelector else self.destinationSelectors[currentComponentIndex].acDestinationSelector; // select correct destination
+                    const huffmanTable = self.huffmanTables[destinationSelector][valueTypeIndex]; // select correct destination
+                    // pp.print("huffmanTable: [{d}][{d}]\n", .{ destinationSelector, valueTypeIndex });
 
-                    pp.print("bufPos before: {d}\n", .{buffer.pos});
+                    // pp.print("bufPos before: {x}\n", .{startIndex + buffer.pos});
                     var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
                     const currBufPos = buffer.pos;
                     const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
                         const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
                         // pp.print("bits: {b}\n", .{bitsRead});
 
+                        // pp.print("bufPos inside, before checking: {d}\n", .{buffer.pos});
                         pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
-                        pp.print("bufPos inside, before checking: {d}\n", .{buffer.pos});
                         const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
                         if (maybeVal) |val| {
                             // pp.print("foundVal: length, code: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
@@ -425,24 +444,24 @@ const Parser = struct {
                         }
                         buffer.pos = currBufPos; // revert buffer position to try to read more bits from beginning
                         bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
-                        pp.print("bufPos inside, after substract: {d}\n", .{buffer.pos});
+                        // pp.print("bufPos inside, after substract: {d}\n", .{buffer.pos});
                     } else return ParserError.NoValidHuffmanCodeFound;
                     // buffer.pos += (bitsToRead + 1); // we have the value here, move buffer forward
                     // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
-                    pp.print("bufPos after: {d}\n", .{buffer.pos});
+                    // pp.print("bufPos after: {d}\n", .{buffer.pos});
 
                     // pp.print("foundVal: {b:0>8}\n", .{value});
 
                     if (valueType == .Dc) {
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @bitCast(i8, bitsRead);
-                        // pp.print("(dc) magnitude, value: {d} {?}\n", .{ value, dcValue });
+                        pp.print("(dc) magnitude, value: {d} {?}\n", .{ value, dcValue });
                         currentComopnentDC += dcValue;
                         blocks[currentBlockIndex].components[currentComponentIndex][0] = currentComopnentDC;
                     } else {
                         const zeroesCount: u8 = @shrExact(value & 0b11110000, 4);
                         const magnitude: u8 = value & 0b00001111;
-                        // pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
+                        pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
                         for (0..zeroesCount) |_| valueIndex += 1;
                         const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
                         const acValue = @bitCast(i8, bitsRead);
