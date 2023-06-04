@@ -259,7 +259,7 @@ const Parser = struct {
 
                 var kvIt = code_map.iterator();
                 while (kvIt.next()) |kv| {
-                    pp.print("kv: {?} -> {b}\n", .{ kv.key_ptr.*, kv.value_ptr.* });
+                    pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
                 }
 
                 self.huffmanTables[tableClass.destinationIdentifier][@enumToInt(tableClass.class)] = code_map;
@@ -381,69 +381,82 @@ const Parser = struct {
         const blockCount: usize = @divTrunc(self.pWidth * self.pHeight, 64);
         pp.print("blockCount: {d}\n", .{blockCount});
 
-        var currentComponentIndex: usize = 0;
-        var dcs: []u8 = try self.allocator.alloc(u8, self.componentCount);
-        _ = dcs;
-        var block: Block = undefined;
-
-        var dc: i8 = 0;
+        var dcs: []i8 = try self.allocator.alloc(i8, self.componentCount);
+        var blocks: []Block = try self.allocator.alloc(Block, blockCount);
 
         var valueIndex: u6 = 0;
-        while (valueIndex < BLOCK_SIZE - 1) {
-            const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
-            const valueTypeIndex = @enumToInt(valueType); // get the index used for accessing arrays
-            // pp.print("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
 
-            // NOTE: am i selecting the right tables? most likely not, as the code overruns EOF
+        pp.print("beginning with i: {x}\n", .{i});
+        var buffer = std.io.fixedBufferStream(self.data[i..]);
+        var bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
 
-            const dcAcHuffmantTableSelector = if (valueType == .Dc) self.destinationSelectors[currentComponentIndex].dcDestinationSelector else self.destinationSelectors[currentComponentIndex].acDestinationSelector; // select correct destination
-            const huffmanTable = self.huffmanTables[dcAcHuffmantTableSelector][valueTypeIndex]; // select correct destina
+        var currentBlockIndex: usize = 0;
+        while (currentBlockIndex < blockCount) : (currentBlockIndex += 1) {
+            pp.print("currentBlockIndex: {d}\n", .{currentBlockIndex});
+            var currentComponentIndex: usize = 0;
+            var currentComopnentDC: i8 = dcs[currentComponentIndex];
+            while (currentComponentIndex < self.componentCount) : (currentComponentIndex += 1) {
+                pp.print("currentComponentIndex: {d}\n", .{currentComponentIndex});
+                while (valueIndex < BLOCK_SIZE - 1) {
+                    const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
+                    const valueTypeIndex = @enumToInt(valueType); // get the index used for accessing arrays
+                    // pp.print("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
 
-            var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
-            const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
-                var buffer = std.io.fixedBufferStream(self.data[i..]);
-                var bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
-                const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
-                // pp.print("bits: {b}\n", .{bitsRead});
+                    // NOTE: am i selecting the right tables? most likely not, as the code overruns EOF
 
-                // pp.print("trying to get length, code: {d}, {b}\n", .{ bitsToRead + 1, bitsRead });
-                const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
-                if (maybeVal) |val| {
-                    // pp.print("foundVal: {d}: {b} -> {b}\n", .{ bitsToRead + 1, bitsRead, val });
-                    break val;
+                    // pp.print("componentIndex: {d}\n", .{currentComponentIndex});
+                    const dcAcHuffmantTableSelector = if (valueType == .Dc) self.destinationSelectors[currentComponentIndex].dcDestinationSelector else self.destinationSelectors[currentComponentIndex].acDestinationSelector; // select correct destination
+                    const huffmanTable = self.huffmanTables[dcAcHuffmantTableSelector][valueTypeIndex]; // select correct destination
+                    // pp.print("huffmanTable: [{d}][{d}]\n", .{ dcAcHuffmantTableSelector, valueTypeIndex });
+
+                    pp.print("bufPos before: {d}\n", .{buffer.pos});
+                    var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
+                    const currBufPos = buffer.pos;
+                    const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
+                        const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
+                        // pp.print("bits: {b}\n", .{bitsRead});
+
+                        pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
+                        pp.print("bufPos inside, before checking: {d}\n", .{buffer.pos});
+                        const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
+                        if (maybeVal) |val| {
+                            // pp.print("foundVal: length, code: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
+                            break val;
+                        }
+                        buffer.pos = currBufPos; // revert buffer position to try to read more bits from beginning
+                        bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
+                        pp.print("bufPos inside, after substract: {d}\n", .{buffer.pos});
+                    } else return ParserError.NoValidHuffmanCodeFound;
+                    // buffer.pos += (bitsToRead + 1); // we have the value here, move buffer forward
+                    // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
+                    pp.print("bufPos after: {d}\n", .{buffer.pos});
+
+                    // pp.print("foundVal: {b:0>8}\n", .{value});
+
+                    if (valueType == .Dc) {
+                        const bitsRead = try bitReader.readBitsNoEof(u8, value);
+                        const dcValue = @bitCast(i8, bitsRead);
+                        // pp.print("(dc) magnitude, value: {d} {?}\n", .{ value, dcValue });
+                        currentComopnentDC += dcValue;
+                        blocks[currentBlockIndex].components[currentComponentIndex][0] = currentComopnentDC;
+                    } else {
+                        const zeroesCount: u8 = @shrExact(value & 0b11110000, 4);
+                        const magnitude: u8 = value & 0b00001111;
+                        // pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
+                        for (0..zeroesCount) |_| valueIndex += 1;
+                        const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
+                        const acValue = @bitCast(i8, bitsRead);
+                        blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
+                    }
+                    valueIndex += 1;
+                    pp.print("valueIndex: {d}\n", .{valueIndex});
+
+                    // pp.print("found val: {b}\n", .{value});
+                    // pp.print("cci: {d}\n", .{currentComponentIndex});
+                    // currentComponentIndex = (currentComponentIndex + 1) % self.componentCount;
+                    // if (valueIndex == 4) break;
                 }
-            } else return ParserError.NoValidHuffmanCodeFound;
-
-            i += (bitsToRead + 1); // move the position forward by how much bits we read
-
-            pp.print("bitsRead: {d}\n", .{bitsToRead + 1});
-            pp.print("i: {d}\n", .{i});
-
-            var buffer = std.io.fixedBufferStream(self.data[i..]);
-            var bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
-
-            if (valueType == .Dc) {
-                const bitsRead = try bitReader.readBitsNoEof(u8, value);
-                const dcValue = @bitCast(i8, bitsRead);
-                pp.print("(dc) value: {?}\n", .{dcValue});
-                dc += dcValue;
-                block.components[currentComponentIndex][0] = dc;
-            } else {
-                const zeroesCount = value & 0b11110000;
-                const magnitude = value & 0b00001111;
-                pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
-                for (0..zeroesCount) |_| valueIndex += 1;
-                const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
-                const acValue = @bitCast(i8, bitsRead);
-                block.components[currentComponentIndex][valueIndex] = acValue;
             }
-            valueIndex += 1;
-            pp.print("valueIndex: {d}\n", .{valueIndex});
-
-            // pp.print("found val: {b}\n", .{value});
-            // pp.print("cci: {d}\n", .{currentComponentIndex});
-            // currentComponentIndex = (currentComponentIndex + 1) % self.componentCount;
-            // if (valueIndex == 4) break;
         }
         pp.print("↑\n\n", .{});
     }
