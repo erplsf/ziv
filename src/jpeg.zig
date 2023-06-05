@@ -5,7 +5,7 @@ const JpegEndianness = std.builtin.Endian.Big;
 const dPrint = std.debug.print;
 const readInt = std.mem.readIntBig;
 const readIntSlice = std.mem.readIntSliceBig;
-const BLOCK_SIZE = 64;
+const BLOCK_SIZE = 8 * 8;
 
 const ValueType = enum(u1) {
     Dc = 0,
@@ -29,7 +29,7 @@ const Marker = enum(u16) {
 };
 
 const Block = struct {
-    components: [3][BLOCK_SIZE]i8 = std.mem.zeroes([3][BLOCK_SIZE]i8), // NOTE: do i need it?
+    components: [3]@Vector(BLOCK_SIZE, i8),
 };
 
 const HuffmanTableHeader = packed struct { // NOTE/HACK: order reversed because of endianness
@@ -96,6 +96,8 @@ const Parser = struct {
     pWidth: usize = undefined,
     pHeight: usize = undefined,
 
+    rawBlocks: []Block = undefined,
+
     pub fn init(allocator: std.mem.Allocator, data: []u8) Self {
         const markers = std.AutoHashMap(Marker, MarkerList).init(allocator);
         const list = std.ArrayList(u8).fromOwnedSlice(allocator, data);
@@ -120,6 +122,7 @@ const Parser = struct {
         try self.decodeStarOfScan();
         try self.cleanByteStuffing();
         try self.decodeImageData();
+        try self.dequantizeBlocks();
     }
 
     pub fn parseMarkers(self: *Self) !void {
@@ -294,6 +297,7 @@ const Parser = struct {
         var qtList: MarkerList = self.markers.get(Marker.quantizationTable) orelse return ParserError.NoRequiredMarkerFound;
         std.debug.assert(qtList.items.len >= 1);
 
+        var qIndex: usize = 0;
         for (qtList.items) |startIndex| {
             var i: usize = startIndex;
             i += 2; // skip marker
@@ -302,8 +306,7 @@ const Parser = struct {
 
             const endIndex = (startIndex + 2) + full_block_length;
 
-            var qIndex: usize = 0;
-            while (i < endIndex) : (qIndex += 1) {
+            while (i < endIndex) {
                 const tableHeader = @bitCast(QuantizationTableHeader, self.data[i]);
                 i += 1;
 
@@ -313,10 +316,12 @@ const Parser = struct {
                 self.quantizationTables[qIndex].header = tableHeader;
                 self.quantizationTables[qIndex].table = table;
 
+                pp.print("will set qTable at [{d}]\n", .{qIndex});
                 pp.print("{?}\n", .{self.quantizationTables[qIndex]});
 
                 i += 64;
             }
+            qIndex += 1;
         }
 
         pp.print("↑\n\n", .{});
@@ -401,9 +406,9 @@ const Parser = struct {
         pp.print("blockCount: {d}\n", .{blockCount});
 
         var dcs: []i8 = try self.allocator.alloc(i8, self.componentCount);
-        var blocks: []Block = try self.allocator.alloc(Block, blockCount);
+        for (dcs) |*dc| dc.* = 0;
 
-        var valueIndex: u6 = 0;
+        var blocks: []Block = try self.allocator.alloc(Block, blockCount);
 
         pp.print("beginning with i: {x}\n", .{i});
         var buffer = std.io.fixedBufferStream(self.data[i..]);
@@ -413,8 +418,10 @@ const Parser = struct {
         while (currentBlockIndex < blockCount) : (currentBlockIndex += 1) {
             pp.print("currentBlockIndex: {d}\n", .{currentBlockIndex});
             var currentComponentIndex: usize = 0;
-            var currentComopnentDC: i8 = dcs[currentComponentIndex];
             while (currentComponentIndex < self.componentCount) : (currentComponentIndex += 1) {
+                var currentComopnentDC: i8 = dcs[currentComponentIndex];
+                // pp.print("currentDC: {d}\n", .{currentComopnentDC});
+                var valueIndex: u6 = 0;
                 pp.print("currentComponentIndex: {d}\n", .{currentComponentIndex});
                 while (valueIndex < BLOCK_SIZE - 1) {
                     const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
@@ -439,10 +446,10 @@ const Parser = struct {
                         // pp.print("bits: {b}\n", .{bitsRead});
 
                         // pp.print("bufPos inside, after reading: {d}\n", .{buffer.pos});
-                        pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
+                        // pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
                         const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
                         if (maybeVal) |val| {
-                            pp.print("length, code: val: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
+                            // pp.print("length, code: val: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
                             break val;
                         }
                         bitReader = savedBitReader;
@@ -455,39 +462,63 @@ const Parser = struct {
                     // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                     // pp.print("bufPos after: {d}\n", .{buffer.pos});
 
-                    pp.print("foundVal: {b:0>8}\n", .{value});
+                    // pp.print("foundVal: {b:0>8}\n", .{value});
 
                     if (valueType == .Dc) {
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @bitCast(i8, bitsRead);
-                        pp.print("(dc) magnitude, value: {d} {b:0>8}\n", .{ value, bitsRead });
+                        // pp.print("(dc) magnitude, value: {d} {d}\n", .{ value, dcValue });
                         currentComopnentDC += dcValue;
+                        // pp.print("(dc) newCurrentDC: {d}\n", .{currentComopnentDC});
                         blocks[currentBlockIndex].components[currentComponentIndex][0] = currentComopnentDC;
                     } else {
                         const zeroesCount: u8 = @shrExact(value & 0b11110000, 4);
                         const magnitude: u8 = value & 0b00001111;
-                        pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
+                        // pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
                         if (zeroesCount == 0 and magnitude == 0) {
-                            pp.print("FOUND EOB!\n", .{});
+                            // pp.print("FOUND EOB!\n", .{});
+                            while (valueIndex < BLOCK_SIZE - 1) {
+                                blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = 0;
+                                valueIndex += 1;
+                            }
+                            blocks[currentBlockIndex].components[currentComponentIndex][63] = 0;
                             break;
                         }
-                        valueIndex += @truncate(u6, zeroesCount); // NOTE: this is safe, maybe do it above?
+                        for (0..@truncate(u6, zeroesCount)) |_| {
+                            // NOTE: this is safe, maybe do it above?
+                            blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = 0;
+                            valueIndex += 1;
+                        }
                         const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
-                        pp.print("(ac) value: {b:0>8}\n", .{bitsRead});
                         const acValue = @bitCast(i8, bitsRead);
+                        // pp.print("(ac) value: {d}\n", .{acValue});
                         blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
                     }
                     valueIndex += 1;
-                    pp.print("valueIndex: {d}\n", .{valueIndex});
+                    // pp.print("valueIndex: {d}\n", .{valueIndex});
 
                     // pp.print("found val: {b}\n", .{value});
                     // pp.print("cci: {d}\n", .{currentComponentIndex});
                     // currentComponentIndex = (currentComponentIndex + 1) % self.componentCount;
                     // if (valueIndex == 4) break;
                 }
+                // pp.print("finalBlock: {?}\n", .{blocks[currentBlockIndex].components[currentComponentIndex]});
             }
         }
+        self.rawBlocks = blocks;
         pp.print("↑\n\n", .{});
+    }
+
+    fn dequantizeBlocks(self: *Self) !void {
+        for (self.rawBlocks) |*block| {
+            for (0..self.componentCount) |currentComponentIndex| {
+                const qTableIndex = self.componentTables[currentComponentIndex].qTableDestination;
+                std.debug.print("block: {?}\n", .{block.components[currentComponentIndex]});
+                std.debug.print("qTable: {?}\n", .{self.quantizationTables[qTableIndex].table});
+                block.components[currentComponentIndex] *= @intCast(@Vector(BLOCK_SIZE, i8), self.quantizationTables[qTableIndex].table);
+                std.debug.print("{?}\n", .{block.components[currentComponentIndex]});
+            }
+        }
     }
 
     const ParserError = error{
