@@ -138,7 +138,7 @@ const Parser = struct {
         var skipSize: usize = 2;
         while (i < self.data.len) {
             const value = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-            const marker = @intToEnum(Marker, value);
+            const marker = @as(Marker, @enumFromInt(value));
 
             // pp.print("{d} < {d} skipSize: {d}\n", .{ i, self.data.len, skipSize });
             // pp.print("{x} 0x{?} -> ", .{ i, std.fmt.fmtSliceHexLower(self.data[i .. i + 2]) });
@@ -223,7 +223,7 @@ const Parser = struct {
 
         for (0..imageComponentCount) |index| {
             const offset = index * packedComponentSize;
-            @memcpy(@ptrCast([*]u8, self.componentTables[index..].ptr), self.data[i + offset .. i + offset + packedComponentSize]); // HACK: unsafe but works :)
+            @memcpy(@as([*]u8, @ptrCast(self.componentTables[index..].ptr)), self.data[i + offset .. i + offset + packedComponentSize]); // HACK: unsafe but works :)
             try destinationIdentifierSet.put(self.componentTables[index].qTableDestination, {});
             pp.print("table: {?}\n", .{self.componentTables[index]});
         }
@@ -248,11 +248,11 @@ const Parser = struct {
             const endIndex = startIndex + 2 + full_block_length;
 
             while (i < endIndex) {
-                const tableClass = @bitCast(HuffmanTableHeader, readInt(u8, &self.data[i]));
+                const tableClass = @as(HuffmanTableHeader, @bitCast(readInt(u8, &self.data[i])));
                 pp.print("HTH: {?}\n", .{tableClass});
                 i += 1;
 
-                const lengths = @ptrCast(*const [16]u8, self.data[i .. i + 16]);
+                const lengths = @as(*const [16]u8, @ptrCast(self.data[i .. i + 16]));
                 i += 16;
 
                 pp.print("lengths: ", .{});
@@ -282,8 +282,8 @@ const Parser = struct {
                     pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
                 }
 
-                pp.print("will set this table at [{d}][{d}]\n", .{ tableClass.destinationIdentifier, @enumToInt(tableClass.class) });
-                self.huffmanTables[tableClass.destinationIdentifier][@enumToInt(tableClass.class)] = code_map;
+                pp.print("will set this table at [{d}][{d}]\n", .{ tableClass.destinationIdentifier, @intFromEnum(tableClass.class) });
+                self.huffmanTables[tableClass.destinationIdentifier][@intFromEnum(tableClass.class)] = code_map;
             }
         }
 
@@ -307,10 +307,10 @@ const Parser = struct {
             const endIndex = (startIndex + 2) + full_block_length;
 
             while (i < endIndex) {
-                const tableHeader = @bitCast(QuantizationTableHeader, self.data[i]);
+                const tableHeader = @as(QuantizationTableHeader, @bitCast(self.data[i]));
                 i += 1;
 
-                const elements = @ptrCast(*const [64]u8, self.data[i .. i + 64]);
+                const elements = @as(*const [64]u8, @ptrCast(self.data[i .. i + 64]));
                 var table: @Vector(64, u8) = elements.*;
 
                 self.quantizationTables[qIndex].header = tableHeader;
@@ -350,7 +350,7 @@ const Parser = struct {
         for (0..componentCount) |componentIndex| {
             const id = readInt(u8, &self.data[i]);
             i += 1;
-            const destinationSelectors = @bitCast(ComponentDestinationSelectors, readInt(u8, &self.data[i]));
+            const destinationSelectors = @as(ComponentDestinationSelectors, @bitCast(readInt(u8, &self.data[i])));
             i += 1;
 
             pp.print("cih: {?}, {?}\n", .{ id, destinationSelectors });
@@ -425,7 +425,7 @@ const Parser = struct {
                 pp.print("currentComponentIndex: {d}\n", .{currentComponentIndex});
                 while (valueIndex < BLOCK_SIZE - 1) {
                     const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
-                    const valueTypeIndex = @enumToInt(valueType); // get the index used for accessing arrays
+                    const valueTypeIndex = @intFromEnum(valueType); // get the index used for accessing arrays
                     // pp.print("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
 
                     // NOTE: am i selecting the right tables? most likely not, as the code overruns EOF
@@ -466,7 +466,7 @@ const Parser = struct {
 
                     if (valueType == .Dc) {
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
-                        const dcValue = @bitCast(i8, bitsRead);
+                        const dcValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(dc) magnitude, value: {d} {d}\n", .{ value, dcValue });
                         currentComopnentDC += dcValue;
                         // pp.print("(dc) newCurrentDC: {d}\n", .{currentComopnentDC});
@@ -484,13 +484,13 @@ const Parser = struct {
                             blocks[currentBlockIndex].components[currentComponentIndex][63] = 0;
                             break;
                         }
-                        for (0..@truncate(u6, zeroesCount)) |_| {
+                        for (0..@as(u6, @truncate(zeroesCount))) |_| {
                             // NOTE: this is safe, maybe do it above?
                             blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = 0;
                             valueIndex += 1;
                         }
                         const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
-                        const acValue = @bitCast(i8, bitsRead);
+                        const acValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(ac) value: {d}\n", .{acValue});
                         blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
                     }
@@ -515,7 +515,7 @@ const Parser = struct {
                 const qTableIndex = self.componentTables[currentComponentIndex].qTableDestination;
                 std.debug.print("block: {?}\n", .{block.components[currentComponentIndex]});
                 std.debug.print("qTable: {?}\n", .{self.quantizationTables[qTableIndex].table});
-                block.components[currentComponentIndex] *= @intCast(@Vector(BLOCK_SIZE, i8), self.quantizationTables[qTableIndex].table);
+                block.components[currentComponentIndex] *= @as(@Vector(BLOCK_SIZE, i8), @intCast(self.quantizationTables[qTableIndex].table));
                 std.debug.print("{?}\n", .{block.components[currentComponentIndex]});
             }
         }
