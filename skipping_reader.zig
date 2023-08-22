@@ -2,6 +2,10 @@ const std = @import("std");
 const io = std.io;
 const testing = std.testing;
 
+// TODO: accept slice of bytes - "pattern", in which the last byte is skipped if the whole pattern is found
+// TODO: use readByte?
+// TODO: add tests to cover it
+
 pub fn SkippingReader(comptime ReaderType: type) type {
     return struct {
         inner_reader: ReaderType,
