@@ -1,5 +1,7 @@
+// TODO: add RST marker handling
 const std = @import("std");
 const utils = @import("utils.zig");
+const skipping_reader = @import("skipping_reader.zig");
 
 const JpegEndianness = std.builtin.Endian.Big;
 const dPrint = std.debug.print;
@@ -10,6 +12,11 @@ const BLOCK_SIZE = 8 * 8;
 const ValueType = enum(u1) {
     Dc = 0,
     Ac = 1,
+};
+
+const SKIPPING_PATTERN: []const u8 = &[_]u8{
+    0xFF,
+    0x00,
 };
 
 const Marker = enum(u16) {
@@ -120,7 +127,7 @@ const Parser = struct {
         try self.buildHuffmanTables();
         try self.decodeQuantizationTables();
         try self.decodeStarOfScan();
-        try self.cleanByteStuffing();
+        // try self.cleanByteStuffing();
         try self.decodeImageData();
         try self.dequantizeBlocks();
     }
@@ -412,7 +419,9 @@ const Parser = struct {
 
         pp.print("beginning with i: {x}\n", .{i});
         var buffer = std.io.fixedBufferStream(self.data[i..]);
-        var bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
+        var skippingReader = skipping_reader.SkippingReader(@TypeOf(buffer.reader()), SKIPPING_PATTERN, 1){ .inner_reader = buffer.reader() };
+        var reader = skippingReader.reader();
+        var bitReader = std.io.bitReader(JpegEndianness, reader);
 
         var currentBlockIndex: usize = 0;
         while (currentBlockIndex < blockCount) : (currentBlockIndex += 1) {
