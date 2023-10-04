@@ -1,7 +1,7 @@
 // TODO: add RST marker handling
 const std = @import("std");
 const utils = @import("utils.zig");
-const skipping_reader = @import("skipping_reader.zig");
+const SkippingReader = @import("skipping_reader.zig").SkippingReader;
 
 const JpegEndianness = std.builtin.Endian.Big;
 const dPrint = std.debug.print;
@@ -77,7 +77,7 @@ const ComponentDestinationSelectors = packed struct { // NOTE: why I don't need 
 };
 
 const HTKey = struct {
-    length: u4, // NOTE: actual length - 1, so length 4 is coded as 3 here
+    length: u8,
     code: u16,
 };
 
@@ -105,6 +105,8 @@ const Parser = struct {
 
     rawBlocks: []Block = undefined,
 
+    restartInterval: ?u16 = null,
+
     pub fn init(allocator: std.mem.Allocator, data: []u8) Self {
         const markers = std.AutoHashMap(Marker, MarkerList).init(allocator);
         const list = std.ArrayList(u8).fromOwnedSlice(allocator, data);
@@ -127,7 +129,6 @@ const Parser = struct {
         try self.buildHuffmanTables();
         try self.decodeQuantizationTables();
         try self.decodeStarOfScan();
-        // try self.cleanByteStuffing();
         try self.decodeImageData();
         try self.dequantizeBlocks();
     }
@@ -138,9 +139,6 @@ const Parser = struct {
 
         var i: usize = 0;
         var sos_found = false;
-
-        var restartInterval: ?u16 = null;
-        _ = restartInterval;
 
         var skipSize: usize = 2;
         while (i < self.data.len) {
@@ -179,8 +177,9 @@ const Parser = struct {
                     break;
                 },
                 .defineRestartInterval => {
-                    // restartInterval = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
-                    i += 4; // NOTE: HACK
+                    const block_length = std.mem.readIntSlice(u16, self.data[i + 2 .. i + 4], JpegEndianness); // skip two bytes to find the length we need to skip
+                    self.restartInterval = std.mem.readIntSlice(u16, self.data[i + 4 .. i + 6], JpegEndianness); // skip two bytes to find the length we need to skip
+                    i += block_length; // NOTE: HACK
                 },
                 .startOfScan => { // found "Start Of Scan" marker, all following data is raw data, start brute-force search for end token
                     sos_found = true;
@@ -268,14 +267,14 @@ const Parser = struct {
 
                 var code_map = HuffmanTable.init(self.allocator);
                 var code_candidate: u16 = 0;
-                var code_index: u4 = 0;
+                var code_index: u8 = 0;
 
                 while (true) {
                     const code_count_for_index = lengths[code_index];
                     var current_code_index: usize = 0;
                     while (current_code_index < code_count_for_index) : (current_code_index += 1) {
                         const value = readInt(u8, &self.data[i]);
-                        try code_map.put(.{ .length = code_index, .code = code_candidate }, value);
+                        try code_map.put(.{ .length = code_index + 1, .code = code_candidate }, value);
                         // _ = code_map.get(.{ .length = code_index, .code = code_candidate });
                         i += 1;
                         code_candidate += 1;
@@ -286,7 +285,8 @@ const Parser = struct {
 
                 var kvIt = code_map.iterator();
                 while (kvIt.next()) |kv| {
-                    pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
+                    _ = kv;
+                    // pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
                 }
 
                 pp.print("will set this table at [{d}][{d}]\n", .{ tableClass.destinationIdentifier, @intFromEnum(tableClass.class) });
@@ -382,23 +382,6 @@ const Parser = struct {
         pp.print("↑\n\n", .{});
     }
 
-    fn cleanByteStuffing(self: *Self) !void {
-        const pp = utils.PrefixPrinter("[cleanByteStuffing] "){};
-        pp.print("↓\n", .{});
-
-        const startIndex = self.imageDataPos;
-        const needle = [_]u8{ 0xff, 0x00 };
-        pp.print("scanData starts at {x}\n", .{startIndex});
-        var zerCount: usize = 0;
-        while (std.mem.indexOf(u8, self.data[startIndex..], &needle)) |index| {
-            // pp.print("found 0xff, 0x00 at {x}\n", .{startIndex + index});
-            _ = self.list.orderedRemove(startIndex + index + 1); // remove the 0x00 byte
-            zerCount += 1;
-        }
-        pp.print("found and deleted {d} zeroes\n", .{zerCount});
-        pp.print("↑\n\n", .{});
-    }
-
     fn decodeImageData(self: *Self) !void {
         const pp = utils.PrefixPrinter("[decodeImageData] "){};
         pp.print("↓\n", .{});
@@ -419,20 +402,28 @@ const Parser = struct {
 
         pp.print("beginning with i: {x}\n", .{i});
         var buffer = std.io.fixedBufferStream(self.data[i..]);
-        var skippingReader = skipping_reader.SkippingReader(@TypeOf(buffer.reader()), SKIPPING_PATTERN, 1){ .inner_reader = buffer.reader() };
+        var skippingReader = SkippingReader(@TypeOf(buffer.reader()), SKIPPING_PATTERN, 1){ .inner_reader = buffer.reader() };
         var reader = skippingReader.reader();
         var bitReader = std.io.bitReader(JpegEndianness, reader);
 
         var currentBlockIndex: usize = 0;
+
+        if (self.restartInterval) |interval| {
+            pp.print("restartInterval: {d}\n", .{interval});
+        }
+
         while (currentBlockIndex < blockCount) : (currentBlockIndex += 1) {
             pp.print("currentBlockIndex: {d}\n", .{currentBlockIndex});
+            pp.print("index: {x}\n", .{i + buffer.pos});
             var currentComponentIndex: usize = 0;
             while (currentComponentIndex < self.componentCount) : (currentComponentIndex += 1) {
+                blocks[currentBlockIndex].components[currentComponentIndex] = std.mem.zeroes(@Vector(BLOCK_SIZE, i8));
+
                 var currentComopnentDC: i8 = dcs[currentComponentIndex];
                 // pp.print("currentDC: {d}\n", .{currentComopnentDC});
-                var valueIndex: u6 = 0;
+                var valueIndex: u8 = 0;
                 pp.print("currentComponentIndex: {d}\n", .{currentComponentIndex});
-                while (valueIndex < BLOCK_SIZE - 1) {
+                while (valueIndex < BLOCK_SIZE) {
                     const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
                     const valueTypeIndex = @intFromEnum(valueType); // get the index used for accessing arrays
                     // pp.print("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
@@ -444,14 +435,15 @@ const Parser = struct {
                     const huffmanTable = self.huffmanTables[destinationSelector][valueTypeIndex]; // select correct destination
                     // pp.print("huffmanTable: [{d}][{d}]\n", .{ destinationSelector, valueTypeIndex });
 
+                    // TODO: refactor this section with saving/restoring bit reader
                     // pp.print("bufPos before: {x}\n", .{startIndex + buffer.pos});
-                    var bitsToRead: u4 = 0; // initilize count of bits to read (actualBits - 1)
+                    var bitsToRead: u8 = 1; // initilize count of bits to read (actualBits - 1)
                     // save the buffer position and bitReader state to restore it later, in case we need to read more bits starting from the same position
                     const currBufPos = buffer.pos;
                     const savedBitReader = bitReader;
-                    const value: u8 = while (bitsToRead < 15) : (bitsToRead += 1) {
+                    const value: u8 = while (bitsToRead < 16) : (bitsToRead += 1) {
                         // pp.print("bufPos inside, before reading: {d}\n", .{buffer.pos});
-                        const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead + 1);
+                        const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead);
                         // pp.print("bits: {b}\n", .{bitsRead});
 
                         // pp.print("bufPos inside, after reading: {d}\n", .{buffer.pos});
@@ -472,8 +464,12 @@ const Parser = struct {
                     // pp.print("bufPos after: {d}\n", .{buffer.pos});
 
                     // pp.print("foundVal: {b:0>8}\n", .{value});
+                    // TODO: end of "refactor this section"
 
+                    // pp.print("valueIndex: {d}\n", .{valueIndex});
                     if (valueType == .Dc) {
+                        // pp.print("trying to read dc value of {d} bits\n", .{value});
+                        std.debug.assert(value > 0);
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(dc) magnitude, value: {d} {d}\n", .{ value, dcValue });
@@ -485,25 +481,35 @@ const Parser = struct {
                         const magnitude: u8 = value & 0b00001111;
                         // pp.print("(ac) zeroes, magnitude: {d}, {d}\n", .{ zeroesCount, magnitude });
                         if (zeroesCount == 0 and magnitude == 0) {
-                            // pp.print("FOUND EOB!\n", .{});
-                            while (valueIndex < BLOCK_SIZE - 1) {
-                                blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = 0;
-                                valueIndex += 1;
-                            }
-                            blocks[currentBlockIndex].components[currentComponentIndex][63] = 0;
+                            pp.print("FOUND EOB!\n", .{});
                             break;
                         }
-                        for (0..@as(u6, @truncate(zeroesCount))) |_| {
-                            // NOTE: this is safe, maybe do it above?
-                            blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = 0;
-                            valueIndex += 1;
-                        }
+                        // pp.print("zeroCount: {d}\n", .{zeroesCount});
+                        // std.os.exit(0);
+
+                        valueIndex += zeroesCount;
+                        // for (0..@as(u6, @truncate(zeroesCount))) |zc| {
+                        //     _ = zc;
+                        //     // NOTE: this is safe, maybe do it above?
+                        //     pp.print("Zero filling\n", .{});
+                        //     // const localIndex = @min(valueIndex + zc, BLOCK_SIZE - 1);
+                        //     blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = 0;
+                        //     // if (localIndex == BLOCK_SIZE - 1) break;
+                        //     valueIndex += 1;
+                        // }
+
+                        // if (valueIndex >= BLOCK_SIZE) {
+                        //     break;
+                        // }
+
+                        // pp.print("magnitude: {d}\n", .{magnitude});
                         const bitsRead = try bitReader.readBitsNoEof(u8, magnitude);
                         const acValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(ac) value: {d}\n", .{acValue});
                         blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
                     }
-                    valueIndex += 1;
+                    // pp.print("value index: {d}\n", .{valueIndex});
+                    valueIndex += 1; // TODO: this overflows!
                     // pp.print("valueIndex: {d}\n", .{valueIndex});
 
                     // pp.print("found val: {b}\n", .{value});
@@ -512,6 +518,15 @@ const Parser = struct {
                     // if (valueIndex == 4) break;
                 }
                 // pp.print("finalBlock: {?}\n", .{blocks[currentBlockIndex].components[currentComponentIndex]});
+            }
+            if (self.restartInterval) |restartInterval| {
+                if ((currentBlockIndex + 1) % restartInterval == 0) {
+                    pp.print("SHOULD RESTART NOW!\n", .{});
+                    for (dcs) |*dc| dc.* = 0;
+                    { // TODO: this section doesn't work! why `alignToByte` doesn't work?
+                        bitReader.alignToByte();
+                    }
+                }
             }
         }
         self.rawBlocks = blocks;
