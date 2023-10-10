@@ -19,15 +19,15 @@ const SKIPPING_PATTERN: []const u8 = &[_]u8{
     0x00,
 };
 
-const Marker = enum(u16) {
-    startOfImage = 0xffd8,
+const Marker = enum(u16) { // TODO: validate that all markers are handled/parsed correctly
+    startOfImage = 0xffd8, // NOTE: validated: noop, just a start marker
     app0 = 0xffe0,
     app1 = 0xffe1,
     app2 = 0xffe2,
     app13 = 0xffed,
     app14 = 0xffee,
     quantizationTable = 0xffdb,
-    startOfFrame0 = 0xffc0,
+    startOfFrame0 = 0xffc0, // NOTE: validated: all data looks ok
     defineHuffmanTable = 0xffc4,
     startOfScan = 0xffda,
     endOfImage = 0xffd9,
@@ -65,7 +65,12 @@ const QuantizationTable = struct {
 };
 
 const ComponentInformation = packed struct {
-    id: u8, // NOTE: component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
+    const Type = enum(u8) {
+        Y = 1,
+        Cb = 2,
+        Cr = 3,
+    };
+    id: Type, // NOTE: component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
     horizontalSamples: u4,
     verticalSamples: u4,
     qTableDestination: u8,
@@ -203,9 +208,12 @@ const Parser = struct {
 
         var sofList: MarkerList = self.markers.get(Marker.startOfFrame0) orelse return ParserError.NoRequiredMarkerFound;
         std.debug.assert(sofList.items.len == 1);
-        var i: usize = sofList.items[0];
 
-        i += 4; // skip marker and block length
+        const startPos = sofList.items[0] + 2; // skip the marker itself
+        var i: usize = startPos;
+
+        const block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
+        i += 2; // skip block length
 
         const precision = self.data[i];
         pp.print("precision: {d}\n", .{precision});
@@ -224,17 +232,15 @@ const Parser = struct {
 
         const packedComponentSize = 3;
 
-        var destinationIdentifierSet = std.AutoHashMap(u8, void).init(self.allocator);
-        defer destinationIdentifierSet.deinit();
-
         for (0..imageComponentCount) |index| {
-            const offset = index * packedComponentSize;
-            @memcpy(@as([*]u8, @ptrCast(self.componentTables[index..].ptr)), self.data[i + offset .. i + offset + packedComponentSize]); // HACK: unsafe but works :)
-            try destinationIdentifierSet.put(self.componentTables[index].qTableDestination, {});
+            @memcpy(@as([*]u8, @ptrCast(self.componentTables[index..].ptr)), self.data[i .. i + packedComponentSize]); // HACK: unsafe but works :)
             pp.print("table: {?}\n", .{self.componentTables[index]});
+            i += packedComponentSize;
         }
 
-        pp.print("total unique qTables: {d}\n", .{destinationIdentifierSet.count()});
+        // pp.print("startPos: {d} blockLength: {d}, sum: {d} == finalPos: {d}", .{ startPos, block_length, startPos + block_length, i });
+        std.debug.assert(startPos + block_length == i); // assert that we parsed exactly as many bytes as we needed to
+
         pp.print("↑\n\n", .{});
     }
 
