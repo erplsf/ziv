@@ -21,11 +21,11 @@ const SKIPPING_PATTERN: []const u8 = &[_]u8{
 
 const Marker = enum(u16) { // TODO: validate that all markers are handled/parsed correctly
     startOfImage = 0xffd8, // NOTE: validated: noop, just a start marker
-    app0 = 0xffe0,
-    app1 = 0xffe1,
-    app2 = 0xffe2,
-    app13 = 0xffed,
-    app14 = 0xffee,
+    // app0 = 0xffe0,
+    // app1 = 0xffe1,
+    // app2 = 0xffe2,
+    // app13 = 0xffed,
+    // app14 = 0xffee,
     quantizationTable = 0xffdb,
     startOfFrame0 = 0xffc0, // NOTE: validated: all data looks ok
     defineHuffmanTable = 0xffc4,
@@ -39,17 +39,17 @@ const Block = struct {
     components: [3]@Vector(BLOCK_SIZE, i8),
 };
 
-const HuffmanTableHeader = packed struct { // NOTE/HACK: order reversed because of endianness
+const HuffmanTableHeader = packed struct { // NOTE: Order is LSB (reverse)
     destinationIdentifier: u4,
-    class: HuffmanTableHeader.ValueType,
+    class: Class,
 
-    const ValueType = enum(u4) {
+    const Class = enum(u4) {
         Dc = 0,
         Ac = 1,
     };
 };
 
-const QuantizationTableHeader = packed struct { // NOTE/HACK: order reversed because of endianness
+const QuantizationTableHeader = packed struct { // NOTE: Order is LSB (reverse)
     destinationIdentifier: u4,
     precision: Precision,
 
@@ -147,7 +147,7 @@ const Parser = struct {
 
         var skipSize: usize = 2;
         while (i < self.data.len) {
-            const value = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
+            const value = readIntSlice(u16, self.data[i .. i + 2]);
             const marker = @as(Marker, @enumFromInt(value));
 
             // pp.print("{d} < {d} skipSize: {d}\n", .{ i, self.data.len, skipSize });
@@ -250,17 +250,18 @@ const Parser = struct {
 
         var htList: MarkerList = self.markers.get(Marker.defineHuffmanTable) orelse return ParserError.NoRequiredMarkerFound;
         std.debug.assert(htList.items.len >= 1);
+
         pp.print("found {d} markers\n", .{htList.items.len});
         for (htList.items) |startIndex| {
             var i: usize = startIndex;
             i += 2; // skip marker
-            const full_block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
+            const full_block_length = readIntSlice(u16, self.data[i .. i + 2]);
             i += 2;
 
             const endIndex = startIndex + 2 + full_block_length;
 
             while (i < endIndex) {
-                const tableClass = @as(HuffmanTableHeader, @bitCast(readInt(u8, &self.data[i])));
+                const tableClass: HuffmanTableHeader = @as(HuffmanTableHeader, @bitCast(readInt(u8, &self.data[i])));
                 pp.print("HTH: {?}\n", .{tableClass});
                 i += 1;
 
@@ -320,7 +321,8 @@ const Parser = struct {
             const endIndex = (startIndex + 2) + full_block_length;
 
             while (i < endIndex) {
-                const tableHeader = @as(QuantizationTableHeader, @bitCast(self.data[i]));
+                pp.print("0x{x}\n", .{i});
+                const tableHeader = @as(QuantizationTableHeader, @bitCast(readInt(u8, &self.data[i])));
                 i += 1;
 
                 const elements = @as(*const [64]u8, @ptrCast(self.data[i .. i + 64]));
