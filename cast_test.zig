@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const Header = packed struct {
+const Header = packed struct { // NOTE: real order is b:a, NOT a:b (LSB) (reverse)
     a: u4,
     b: u4,
 };
