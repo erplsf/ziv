@@ -21,12 +21,12 @@ const SKIPPING_PATTERN: []const u8 = &[_]u8{
 
 const Marker = enum(u16) { // TODO: validate that all markers are handled/parsed correctly
     startOfImage = 0xffd8, // NOTE: validated: noop, just a start marker
-    // app0 = 0xffe0,
+    // app0 = 0xffe0, // NOTE: these are not relevant/used atm
     // app1 = 0xffe1,
     // app2 = 0xffe2,
     // app13 = 0xffed,
     // app14 = 0xffee,
-    quantizationTable = 0xffdb,
+    quantizationTable = 0xffdb, // NOTE: validated: all data looks ok
     startOfFrame0 = 0xffc0, // NOTE: validated: all data looks ok
     defineHuffmanTable = 0xffc4,
     startOfScan = 0xffda,
@@ -37,6 +37,13 @@ const Marker = enum(u16) { // TODO: validate that all markers are handled/parsed
 
 const Block = struct {
     components: [3]@Vector(BLOCK_SIZE, i8),
+};
+
+const FrameHeader = packed struct {
+    componentCount: u8,
+    samplesPerLine: u16,
+    lineCount: u16,
+    samplePrecision: u8,
 };
 
 const HuffmanTableHeader = packed struct { // NOTE: Order is LSB (reverse)
@@ -64,21 +71,22 @@ const QuantizationTable = struct {
     table: @Vector(64, u8), // NOTE: it's always u8 for Sequential DCT
 };
 
-const ComponentInformation = packed struct {
+const ComponentInformation = packed struct { // NOTE: Order is LSB (reverse)
+    qTableDestination: u8,
+    verticalSamples: u4,
+    horizontalSamples: u4,
+    id: Type, // NOTE: component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
+
     const Type = enum(u8) {
         Y = 1,
         Cb = 2,
         Cr = 3,
     };
-    id: Type, // NOTE: component identifier (1 = Y, 2 = Cb, 3 = Cr) according to JFIF standard
-    horizontalSamples: u4,
-    verticalSamples: u4,
-    qTableDestination: u8,
 };
 
-const ComponentDestinationSelectors = packed struct { // NOTE: why I don't need to reverse order here? or do I still need to do so?
-    dcDestinationSelector: u4,
+const ComponentDestinationSelectors = packed struct { // NOTE: Order is LSB (reverse)
     acDestinationSelector: u4,
+    dcDestinationSelector: u4,
 };
 
 const HTKey = struct {
@@ -212,30 +220,24 @@ const Parser = struct {
         const startPos = sofList.items[0] + 2; // skip the marker itself
         var i: usize = startPos;
 
-        const block_length = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
+        const block_length = readIntSlice(u16, self.data[i .. i + 2]);
         i += 2; // skip block length
 
-        const precision = self.data[i];
-        pp.print("precision: {d}\n", .{precision});
-        i += 1;
-        const lineCount = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-        pp.print("lineCount: {d}\n", .{lineCount});
-        self.pHeight = lineCount;
-        i += 2;
-        const columnCount = std.mem.readIntSlice(u16, self.data[i .. i + 2], JpegEndianness);
-        pp.print("columnCount: {d}\n", .{columnCount});
-        self.pWidth = lineCount;
-        i += 2;
-        const imageComponentCount = self.data[i];
-        pp.print("imageComponentCount: {d}\n", .{imageComponentCount});
-        i += 1;
+        const FrameBitsSize = @Type(.{ .Int = .{ .signedness = .unsigned, .bits = @bitSizeOf(FrameHeader) } });
+        const frameByteSize = @bitSizeOf(FrameHeader) / @bitSizeOf(u8);
 
-        const packedComponentSize = 3;
+        const frameHeader: FrameHeader = @as(FrameHeader, @bitCast(readIntSlice(FrameBitsSize, self.data[i .. i + frameByteSize])));
+        pp.print("{?}\n", .{frameHeader});
+        i += frameByteSize;
 
-        for (0..imageComponentCount) |index| {
-            @memcpy(@as([*]u8, @ptrCast(self.componentTables[index..].ptr)), self.data[i .. i + packedComponentSize]); // HACK: unsafe but works :)
+        const TypeBitsSize = @Type(.{ .Int = .{ .signedness = .unsigned, .bits = @bitSizeOf(ComponentInformation) } });
+        const byteSize = @bitSizeOf(ComponentInformation) / @bitSizeOf(u8);
+        // pp.print("size: {d} {d}\n", .{ packedComponentSize, byteSize });
+
+        for (0..frameHeader.componentCount) |index| {
+            self.componentTables[index] = @as(ComponentInformation, @bitCast(readIntSlice(TypeBitsSize, self.data[i .. i + byteSize])));
             pp.print("table: {?}\n", .{self.componentTables[index]});
-            i += packedComponentSize;
+            i += byteSize;
         }
 
         // pp.print("startPos: {d} blockLength: {d}, sum: {d} == finalPos: {d}", .{ startPos, block_length, startPos + block_length, i });
@@ -321,8 +323,8 @@ const Parser = struct {
             const endIndex = (startIndex + 2) + full_block_length;
 
             while (i < endIndex) {
-                pp.print("0x{x}\n", .{i});
-                const tableHeader = @as(QuantizationTableHeader, @bitCast(readInt(u8, &self.data[i])));
+                // pp.print("0x{x}\n", .{i});
+                const tableHeader = @as(QuantizationTableHeader, @bitCast(self.data[i]));
                 i += 1;
 
                 const elements = @as(*const [64]u8, @ptrCast(self.data[i .. i + 64]));
@@ -343,7 +345,7 @@ const Parser = struct {
     }
 
     fn decodeStarOfScan(self: *Self) !void {
-        const pp = utils.PrefixPrinter("[decodeSoF] "){};
+        const pp = utils.PrefixPrinter("[decodeSoS] "){};
         pp.print("↓\n", .{});
 
         const sosList: MarkerList = self.markers.get(Marker.startOfScan) orelse return ParserError.NoRequiredMarkerFound;
