@@ -113,8 +113,7 @@ const Parser = struct {
     componentCount: usize = undefined,
     destinationSelectors: [3]ComponentDestinationSelectors = undefined,
 
-    pWidth: usize = undefined,
-    pHeight: usize = undefined,
+    frameHeader: FrameHeader = undefined,
 
     rawBlocks: []Block = undefined,
 
@@ -226,15 +225,15 @@ const Parser = struct {
         const FrameBitsSize = @Type(.{ .Int = .{ .signedness = .unsigned, .bits = @bitSizeOf(FrameHeader) } });
         const frameByteSize = @bitSizeOf(FrameHeader) / @bitSizeOf(u8);
 
-        const frameHeader: FrameHeader = @as(FrameHeader, @bitCast(readIntSlice(FrameBitsSize, self.data[i .. i + frameByteSize])));
-        pp.print("{?}\n", .{frameHeader});
+        self.frameHeader = @as(FrameHeader, @bitCast(readIntSlice(FrameBitsSize, self.data[i .. i + frameByteSize])));
+        pp.print("{?}\n", .{self.frameHeader});
         i += frameByteSize;
 
         const TypeBitsSize = @Type(.{ .Int = .{ .signedness = .unsigned, .bits = @bitSizeOf(ComponentInformation) } });
         const byteSize = @bitSizeOf(ComponentInformation) / @bitSizeOf(u8);
         // pp.print("size: {d} {d}\n", .{ packedComponentSize, byteSize });
 
-        for (0..frameHeader.componentCount) |index| {
+        for (0..self.frameHeader.componentCount) |index| {
             self.componentTables[index] = @as(ComponentInformation, @bitCast(readIntSlice(TypeBitsSize, self.data[i .. i + byteSize])));
             pp.print("table: {?}\n", .{self.componentTables[index]});
             i += byteSize;
@@ -363,15 +362,16 @@ const Parser = struct {
         self.componentCount = componentCount;
         i += 1;
 
-        for (0..componentCount) |componentIndex| {
-            const id = readInt(u8, &self.data[i]);
+        for (0..componentCount) |_| {
+            const id = readInt(u8, &self.data[i]); // TODO: save id mapping for later use in image decoding (to preserve the right order)
             i += 1;
-            const destinationSelectors = @as(ComponentDestinationSelectors, @bitCast(readInt(u8, &self.data[i])));
+            const destinationSelectors = @as(ComponentDestinationSelectors, @bitCast(self.data[i]));
             i += 1;
 
             pp.print("cih: {?}, {?}\n", .{ id, destinationSelectors });
 
-            self.destinationSelectors[componentIndex] = destinationSelectors;
+            std.debug.assert(id - 1 >= 0);
+            self.destinationSelectors[id - 1] = destinationSelectors;
         }
 
         const ss = readInt(u8, &self.data[i]); // start of spectral selector, for Seq DCT == 0
@@ -401,7 +401,7 @@ const Parser = struct {
         pp.print("imageData length (bytes): {d}\n", .{self.imageDataEnd - self.imageDataPos});
         var i: usize = startIndex;
 
-        const blockCount: usize = @divTrunc(self.pWidth * self.pHeight, 64);
+        const blockCount: usize = @divTrunc(@as(usize, self.frameHeader.lineCount) * @as(usize, self.frameHeader.samplesPerLine), 64); // HACK: is it the right calculation?
         pp.print("blockCount: {d}\n", .{blockCount});
 
         var dcs: []i8 = try self.allocator.alloc(i8, self.componentCount);
@@ -478,13 +478,15 @@ const Parser = struct {
                     // pp.print("valueIndex: {d}\n", .{valueIndex});
                     if (valueType == .Dc) {
                         // pp.print("trying to read dc value of {d} bits\n", .{value});
-                        std.debug.assert(value > 0);
+                        std.debug.assert(value >= 0);
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(dc) magnitude, value: {d} {d}\n", .{ value, dcValue });
                         currentComopnentDC += dcValue;
                         // pp.print("(dc) newCurrentDC: {d}\n", .{currentComopnentDC});
                         blocks[currentBlockIndex].components[currentComponentIndex][0] = currentComopnentDC;
+
+                        valueIndex += 1;
                     } else {
                         const zeroesCount: u8 = @shrExact(value & 0b11110000, 4);
                         const magnitude: u8 = value & 0b00001111;
@@ -518,7 +520,7 @@ const Parser = struct {
                         blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
                     }
                     // pp.print("value index: {d}\n", .{valueIndex});
-                    valueIndex += 1; // TODO: this overflows!
+                    // valueIndex += 1; // TODO: this overflows!
                     // pp.print("valueIndex: {d}\n", .{valueIndex});
 
                     // pp.print("found val: {b}\n", .{value});
