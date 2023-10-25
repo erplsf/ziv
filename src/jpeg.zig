@@ -28,7 +28,7 @@ const Marker = enum(u16) { // TODO: validate that all markers are handled/parsed
     // app14 = 0xffee,
     quantizationTable = 0xffdb, // NOTE: validated: all data looks ok
     startOfFrame0 = 0xffc0, // NOTE: validated: all data looks ok
-    defineHuffmanTable = 0xffc4,
+    defineHuffmanTable = 0xffc4, // NOTE: validated: all data looks ok
     startOfScan = 0xffda,
     endOfImage = 0xffd9,
     defineRestartInterval = 0xffdd,
@@ -61,8 +61,8 @@ const QuantizationTableHeader = packed struct { // NOTE: Order is LSB (reverse)
     precision: Precision,
 
     const Precision = enum(u4) {
-        @"8bit" = 0x0,
-        @"16bit" = 0x1,
+        @"8bit" = 0,
+        @"16bit" = 1,
     };
 };
 
@@ -130,7 +130,7 @@ const Parser = struct {
         self.markers.deinit();
         for (0..2) |dcAc| {
             for (0..2) |destination| {
-                self.huffmanTables[dcAc][destination].deinit();
+                self.huffmanTables[destination][dcAc].deinit();
             }
         }
         self.list.deinit();
@@ -263,8 +263,8 @@ const Parser = struct {
             const endIndex = startIndex + 2 + full_block_length;
 
             while (i < endIndex) {
-                const tableClass: HuffmanTableHeader = @as(HuffmanTableHeader, @bitCast(readInt(u8, &self.data[i])));
-                pp.print("HTH: {?}\n", .{tableClass});
+                const tableHeader: HuffmanTableHeader = @as(HuffmanTableHeader, @bitCast(self.data[i]));
+                pp.print("HTH: {?}\n", .{tableHeader});
                 i += 1;
 
                 const lengths = @as(*const [16]u8, @ptrCast(self.data[i .. i + 16]));
@@ -292,14 +292,13 @@ const Parser = struct {
                     if (code_index != 15) code_index += 1 else break;
                 }
 
-                var kvIt = code_map.iterator();
-                while (kvIt.next()) |kv| {
-                    _ = kv;
-                    // pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
-                }
+                // var kvIt = code_map.iterator();
+                // while (kvIt.next()) |kv| {
+                //     pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
+                // }
 
-                pp.print("will set this table at [{d}][{d}]\n", .{ tableClass.destinationIdentifier, @intFromEnum(tableClass.class) });
-                self.huffmanTables[tableClass.destinationIdentifier][@intFromEnum(tableClass.class)] = code_map;
+                pp.print("will set this table at [{d}][{d}]\n", .{ tableHeader.destinationIdentifier, @intFromEnum(tableHeader.class) });
+                self.huffmanTables[tableHeader.destinationIdentifier][@intFromEnum(tableHeader.class)] = code_map;
             }
         }
 
