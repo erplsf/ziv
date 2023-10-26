@@ -277,7 +277,7 @@ const Parser = struct {
                 var code_candidate: u16 = 0;
                 var code_index: u8 = 0;
 
-                while (true) {
+                while (true) { // TODO: check if this is correct
                     const code_count_for_index = lengths[code_index];
                     var current_code_index: usize = 0;
                     while (current_code_index < code_count_for_index) : (current_code_index += 1) {
