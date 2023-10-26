@@ -450,7 +450,7 @@ const Parser = struct {
                     // save the buffer position and bitReader state to restore it later, in case we need to read more bits starting from the same position
                     const currBufPos = buffer.pos;
                     const savedBitReader = bitReader;
-                    const value: u8 = while (bitsToRead < 16) : (bitsToRead += 1) {
+                    const value: u8 = while (bitsToRead <= 16) : (bitsToRead += 1) {
                         // pp.print("bufPos inside, before reading: {d}\n", .{buffer.pos});
                         const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead);
                         // pp.print("bits: {b}\n", .{bitsRead});
