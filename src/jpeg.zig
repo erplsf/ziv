@@ -291,10 +291,10 @@ const Parser = struct {
                     if (code_index != 15) code_index += 1 else break;
                 }
 
-                // var kvIt = code_map.iterator();
-                // while (kvIt.next()) |kv| {
-                //     pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
-                // }
+                var kvIt = code_map.iterator();
+                while (kvIt.next()) |kv| {
+                    pp.print("kv: {d}: {b:0>16} -> {b:0>8}\n", .{ kv.key_ptr.*.length, kv.key_ptr.*.code, kv.value_ptr.* });
+                }
 
                 pp.print("will set this table at [{d}][{d}]\n", .{ tableHeader.destinationIdentifier, @intFromEnum(tableHeader.class) });
                 self.huffmanTables[tableHeader.destinationIdentifier][@intFromEnum(tableHeader.class)] = code_map;
@@ -424,6 +424,7 @@ const Parser = struct {
         while (currentBlockIndex < blockCount) : (currentBlockIndex += 1) {
             pp.print("currentBlockIndex: {d}\n", .{currentBlockIndex});
             pp.print("index: {x}\n", .{i + buffer.pos});
+            pp.print("next 4 bytes are: {?}\n", .{std.fmt.fmtSliceHexLower(buffer.buffer[buffer.pos .. buffer.pos + 4])});
             var currentComponentIndex: usize = 0;
             while (currentComponentIndex < self.componentCount) : (currentComponentIndex += 1) {
                 blocks[currentBlockIndex].components[currentComponentIndex] = std.mem.zeroes(@Vector(BLOCK_SIZE, i8));
@@ -434,6 +435,7 @@ const Parser = struct {
                 pp.print("currentComponentIndex: {d}\n", .{currentComponentIndex});
                 while (valueIndex < BLOCK_SIZE) {
                     const valueType = if (valueIndex == 0) ValueType.Dc else ValueType.Ac; // is this a DC value or an AC value
+                    pp.print("decoding valueIndex: {d}, type: {s}\n", .{ valueIndex, if (valueType == .Dc) "DC" else "AC" });
                     const valueTypeIndex = @intFromEnum(valueType); // get the index used for accessing arrays
                     // pp.print("valueType: {?}: {?}\n", .{ valueType, valueTypeIndex });
 
@@ -444,7 +446,7 @@ const Parser = struct {
                     const huffmanTable = self.huffmanTables[destinationSelector][valueTypeIndex]; // select correct destination
                     // pp.print("huffmanTable: [{d}][{d}]\n", .{ destinationSelector, valueTypeIndex });
 
-                    // TODO: refactor this section with saving/restoring bit reader
+                    // FIXME: refactor this section with saving/restoring bit reader
                     // pp.print("bufPos before: {x}\n", .{startIndex + buffer.pos});
                     var bitsToRead: u8 = 1; // initilize count of bits to read (actualBits - 1)
                     // save the buffer position and bitReader state to restore it later, in case we need to read more bits starting from the same position
@@ -459,9 +461,10 @@ const Parser = struct {
                         // pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
                         const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
                         if (maybeVal) |val| {
-                            // pp.print("length, code: val: {d}, {b:0>16} {b:0>8}\n", .{ bitsToRead + 1, bitsRead, val });
+                            pp.print("length, code, val: {d}, {b:0>16}, {b:0>8}\n", .{ bitsToRead, bitsRead, val });
                             break val;
                         }
+                        pp.print("tried code length {d}, bits {b:0>16} didn't found anything :(\n", .{ bitsToRead, bitsRead });
                         bitReader = savedBitReader;
                         buffer.pos = currBufPos;
                         // buffer.pos = currBufPos; // revert buffer position to try to read more bits from beginning

@@ -25,6 +25,7 @@ pub fn SkippingReader(comptime ReaderType: type, comptime pattern: []const u8, c
                     error.EndOfStream => break,
                     else => |e| return e,
                 };
+                std.debug.print("sr: read byte 0x{x}\n", .{byte});
                 dest[bytesRead] = byte;
                 bytesRead += 1;
                 if (byte == pattern[self.pattern_offset]) {
@@ -88,6 +89,8 @@ test "works as expected with skip_bytes 1" {
         0x00,
         0xFF,
         0x00,
+        0xFF,
+        0xD0,
     };
 
     const pattern: []const u8 = &[_]u8{
@@ -105,6 +108,8 @@ test "works as expected with skip_bytes 1" {
         0x00,
         0x00,
         0xFF,
+        0xFF,
+        0xD0,
     };
 
     var bStream = std.io.fixedBufferStream(buffer);
@@ -121,4 +126,60 @@ test "works as expected with skip_bytes 1" {
     _ = try skippingSrReader.read(&smallSrBuffer);
 
     try testing.expectEqualSlices(u8, wantedResult, &smallSrBuffer);
+}
+
+test "works as expected with bit_reader" {
+    const buffer: []const u8 = &[_]u8{
+        0xFF,
+        0x00,
+        0xAB,
+        0xCD,
+        0xFF,
+        0xFF,
+        0xAB,
+        0x00,
+        0x00,
+        0xFF,
+        0x00,
+        0xFF,
+        0xD0,
+    };
+
+    const pattern: []const u8 = &[_]u8{
+        0xFF,
+        0x00,
+    };
+
+    const wantedResult: []const u8 = &[_]u8{
+        0xFF,
+        0xAB,
+        0xCD,
+        0xFF,
+        0xFF,
+        0xAB,
+        0x00,
+        0x00,
+        0xFF,
+        0xFF,
+        0xD0,
+    };
+    _ = wantedResult;
+
+    var bStream = std.io.fixedBufferStream(buffer);
+
+    var fbReader = bStream.reader();
+    var fbBuffer: [buffer.len]u8 = undefined;
+    _ = try fbReader.read(&fbBuffer);
+
+    bStream = std.io.fixedBufferStream(buffer);
+    fbReader = bStream.reader();
+    var skippingSr = SkippingReader(@TypeOf(fbReader), pattern, 1){ .inner_reader = fbReader };
+    var skippingSrReader = skippingSr.reader();
+    var bitReader = std.io.bitReader(std.builtin.Endian.Big, skippingSrReader);
+
+    for (0..buffer.len) |i| {
+        var value = try bitReader.readBitsNoEof(u8, 8);
+        std.debug.print("have: {x}, read: {x}\n", .{ buffer[i], value });
+        // try testing.expectEqual(buffer[i], value);
+    }
 }
