@@ -450,23 +450,25 @@ const Parser = struct {
                     // pp.print("bufPos before: {x}\n", .{startIndex + buffer.pos});
                     var bitsToRead: u8 = 1; // initilize count of bits to read (actualBits - 1)
                     // save the buffer position and bitReader state to restore it later, in case we need to read more bits starting from the same position
-                    const currBufPos = buffer.pos;
-                    const savedBitReader = bitReader;
+
+                    var candidate_value: u16 = 0;
+
                     const value: u8 = while (bitsToRead <= 16) : (bitsToRead += 1) {
                         // pp.print("bufPos inside, before reading: {d}\n", .{buffer.pos});
-                        const bitsRead = try bitReader.readBitsNoEof(u16, bitsToRead);
-                        // pp.print("bits: {b}\n", .{bitsRead});
+                        // pp.print("Bits to read: {d}\n", .{bitsToRead});
+                        const bit = try bitReader.readBitsNoEof(u1, 1);
+                        candidate_value <<= 1;
+                        candidate_value |= bit;
+                        // pp.print("current candidate: {b:0>16}\n", .{candidate_value});
 
                         // pp.print("bufPos inside, after reading: {d}\n", .{buffer.pos});
                         // pp.print("trying to get length, code: {d}, {b:0>16}\n", .{ bitsToRead + 1, bitsRead });
-                        const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = bitsRead });
+                        const maybeVal = huffmanTable.get(.{ .length = bitsToRead, .code = candidate_value });
                         if (maybeVal) |val| {
-                            pp.print("length, code, val: {d}, {b:0>16}, {b:0>8}\n", .{ bitsToRead, bitsRead, val });
+                            pp.print("length, code, val: {d}, {b:0>16}, {b:0>8}\n", .{ bitsToRead, candidate_value, val });
                             break val;
                         }
-                        pp.print("tried code length {d}, bits {b:0>16} didn't found anything :(\n", .{ bitsToRead, bitsRead });
-                        bitReader = savedBitReader;
-                        buffer.pos = currBufPos;
+                        // pp.print("tried code length {d}, bits {b:0>16} didn't found anything :(\n", .{ bitsToRead, candidate_value });
                         // buffer.pos = currBufPos; // revert buffer position to try to read more bits from beginning
                         // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                         // pp.print("bufPos inside, after substract: {d}\n", .{buffer.pos});
@@ -481,7 +483,6 @@ const Parser = struct {
                     // pp.print("valueIndex: {d}\n", .{valueIndex});
                     if (valueType == .Dc) {
                         // pp.print("trying to read dc value of {d} bits\n", .{value});
-                        std.debug.assert(value >= 0);
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(dc) magnitude, value: {d} {d}\n", .{ value, dcValue });
@@ -521,6 +522,8 @@ const Parser = struct {
                         const acValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(ac) value: {d}\n", .{acValue});
                         blocks[currentBlockIndex].components[currentComponentIndex][valueIndex] = acValue;
+
+                        valueIndex += 1;
                     }
                     // pp.print("value index: {d}\n", .{valueIndex});
                     // valueIndex += 1; // TODO: this overflows!
@@ -536,6 +539,7 @@ const Parser = struct {
             if (self.restartInterval) |restartInterval| {
                 if ((currentBlockIndex + 1) % restartInterval == 0) {
                     pp.print("SHOULD RESTART NOW!\n", .{});
+                    buffer.pos += 2; // HACK: Skip RST marker
                     for (dcs) |*dc| dc.* = 0;
                     { // TODO: this section doesn't work! why `alignToByte` doesn't work?
                         bitReader.alignToByte();
