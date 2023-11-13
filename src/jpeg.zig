@@ -473,6 +473,9 @@ const Parser = struct {
                         // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                         // pp.print("bufPos inside, after substract: {d}\n", .{buffer.pos});
                     } else return ParserError.NoValidHuffmanCodeFound;
+
+                    // bitReader.alignToByte();
+
                     // buffer.pos += (bitsToRead + 1); // we have the value here, move buffer forward
                     // bitReader = std.io.bitReader(JpegEndianness, buffer.reader());
                     // pp.print("bufPos after: {d}\n", .{buffer.pos});
@@ -483,6 +486,7 @@ const Parser = struct {
                     // pp.print("valueIndex: {d}\n", .{valueIndex});
                     if (valueType == .Dc) {
                         // pp.print("trying to read dc value of {d} bits\n", .{value});
+                        pp.print("0x{?}\n", .{std.fmt.fmtSliceHexLower(self.data[startIndex + buffer.pos .. startIndex + buffer.pos + 2])});
                         const bitsRead = try bitReader.readBitsNoEof(u8, value);
                         const dcValue = @as(i8, @bitCast(bitsRead));
                         // pp.print("(dc) magnitude, value: {d} {d}\n", .{ value, dcValue });
